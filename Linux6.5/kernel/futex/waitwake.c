@@ -337,35 +337,40 @@ static long futex_wait_restart(struct restart_block *restart);
  * @q:		the futex_q to queue up on
  * @timeout:	the prepared hrtimer_sleeper, or null for no timeout
  */
+/*将当前线程挂到指定的哈希桶中,将当前线程状态设置为阻塞态,设置一个定时器并使用schedule让当前cpu去调度*/
 void futex_wait_queue(struct futex_hash_bucket *hb, struct futex_q *q,
 			    struct hrtimer_sleeper *timeout)
 {
-	/*
-	 * The task state is guaranteed to be set before another task can
-	 * wake it. set_current_state() is implemented using smp_store_mb() and
-	 * futex_queue() calls spin_unlock() upon completion, both serializing
-	 * access to the hash list and forcing another memory barrier.
-	 */
+    /*
+     * 在另一个线程唤醒当前线程之前，确保任务状态已经被设置为可中断的阻塞态。
+     * set_current_state() 使用了 smp_store_mb() 来保证内存屏障，
+     * futex_queue() 会调用 spin_unlock() 完成对 Futex 队列的同步。
+     */
+	/*将当前的线程设置为阻塞态*/
 	set_current_state(TASK_INTERRUPTIBLE|TASK_FREEZABLE);
+	/*将futex等待节点放入对应的hash桶中;通过__futex_queue实现的*/
 	futex_queue(q, hb);
 
-	/* Arm the timer */
+	/* 如果指定了超时参数,启动定时器 */
 	if (timeout)
 		hrtimer_sleeper_start_expires(timeout, HRTIMER_MODE_ABS);
 
-	/*
-	 * If we have been removed from the hash list, then another task
-	 * has tried to wake us, and we can skip the call to schedule().
-	 */
+    /*
+     * 如果 Futex 等待队列条目还没有被移出哈希链表，则说明线程还没有被唤醒。
+     * 此时继续等待并调用调度函数 schedule() 进入睡眠状态。
+     */
 	if (likely(!plist_node_empty(&q->list))) {
-		/*
-		 * If the timer has already expired, current will already be
-		 * flagged for rescheduling. Only call schedule if there
-		 * is no timeout, or if it has yet to expire.
-		 */
+        /*
+         * 如果定时器已经过期，当前线程会被标记为需要重新调度。
+         * 如果没有超时限制或者定时器尚未过期，调用 `schedule()` 进入睡眠。
+         */
 		if (!timeout || timeout->task)
-			schedule();
+			schedule();//进入睡眠状态
 	}
+	/****************************************************************/
+	/*                      线程被阻塞,等待被唤醒                     */
+	/****************************************************************/
+	/*唤醒后，将当前线程的状态恢复为运行状态*/
 	__set_current_state(TASK_RUNNING);
 }
 
@@ -586,6 +591,8 @@ int futex_wait_multiple(struct futex_vector *vs, unsigned int count,
  *  -  0 - uaddr contains val and hb has been locked;
  *  - <1 - -EFAULT or -EWOULDBLOCK (uaddr does not contain val) and hb is unlocked
  */
+
+/*根据uaddr flags 设置hash的key值,并判断uaddr是否为预期值*/
 int futex_wait_setup(u32 __user *uaddr, u32 val, unsigned int flags,
 		     struct futex_q *q, struct futex_hash_bucket **hb)
 {
@@ -611,7 +618,8 @@ int futex_wait_setup(u32 __user *uaddr, u32 val, unsigned int flags,
 	 * while the syscall executes.
 	 */
 retry:
-	ret = get_futex_key(uaddr, flags & FLAGS_SHARED, &q->key, FUTEX_READ);
+
+	ret = get_futex_key(uaddr, flags & FLAGS_SHARED, &q->key, FUTEX_READ);//
 	if (unlikely(ret != 0))
 		return ret;
 
@@ -640,19 +648,19 @@ retry_private:
 
 	return ret;
 }
-
+/*将线程放入等待队列,并使其阻塞*/
 int futex_wait(u32 __user *uaddr, unsigned int flags, u32 val, ktime_t *abs_time, u32 bitset)
 {
-	struct hrtimer_sleeper timeout, *to;
-	struct restart_block *restart;
-	struct futex_hash_bucket *hb;
-	struct futex_q q = futex_q_init;
+	struct hrtimer_sleeper timeout, *to;//定义一个高精度定时器（hrtimer）用于处理超时等待
+	struct restart_block *restart;//处理信号重启机制的数据结构
+	struct futex_hash_bucket *hb;//Futex 哈希桶，用于加锁和管理 Futex 等待队列
+	struct futex_q q = futex_q_init;//初始化 Futex 等待队列中的条目
 	int ret;
 
 	if (!bitset)
 		return -EINVAL;
 	q.bitset = bitset;
-
+	/*设置futex的定时器,如果 abs_time 有值，则根据超时时间初始化 hrtimer*/
 	to = futex_setup_timer(abs_time, &timeout, flags,
 			       current->timer_slack_ns);
 retry:
@@ -660,10 +668,11 @@ retry:
 	 * Prepare to wait on uaddr. On success, it holds hb->lock and q
 	 * is initialized.
 	 */
-	ret = futex_wait_setup(uaddr, val, flags, &q, &hb);
+	/**/
+	ret = futex_wait_setup(uaddr, val, flags, &q, &hb);//获取hash key 并确定uaddr为预期值;
 	if (ret)
 		goto out;
-
+	/*将当前线程对应的futex_q节点加入Futex 对应的futex等待队列,并进入睡眠状态,等待被唤醒*/
 	/* futex_queue and wait for wakeup, timeout, or a signal. */
 	futex_wait_queue(hb, &q, to);
 
@@ -672,7 +681,7 @@ retry:
 	if (!futex_unqueue(&q))
 		goto out;
 	ret = -ETIMEDOUT;
-	if (to && !to->task)
+	if (to && !to->task)//如果定时器超时并且没有任务需要继续处理，跳转到 out 退出
 		goto out;
 
 	/*
@@ -685,17 +694,18 @@ retry:
 	ret = -ERESTARTSYS;
 	if (!abs_time)
 		goto out;
-
+	/*设置 restart_block 以便处理信号中断的重启机制*/
 	restart = &current->restart_block;
 	restart->futex.uaddr = uaddr;
 	restart->futex.val = val;
 	restart->futex.time = *abs_time;
 	restart->futex.bitset = bitset;
 	restart->futex.flags = flags | FLAGS_HAS_TIMEOUT;
-
+	/*设置重启函数为 futex_wait_restart*/
 	ret = set_restart_fn(restart, futex_wait_restart);
 
 out:
+	/*如果定时器存在，取消定时器并销毁 hrtimer*/
 	if (to) {
 		hrtimer_cancel(&to->timer);
 		destroy_hrtimer_on_stack(&to->timer);
