@@ -85,32 +85,45 @@ err_unlock:
 long do_futex(u32 __user *uaddr, int op, u32 val, ktime_t *timeout,
 		u32 __user *uaddr2, u32 val2, u32 val3)
 {
+	//取出 futex 操作命令的核心部分 (op 的低位)，cmd 是具体的操作类型
 	int cmd = op & FUTEX_CMD_MASK;
 	unsigned int flags = 0;
-
+	
+	/*未标记私有标识，则将flag设置为共享锁*/
 	if (!(op & FUTEX_PRIVATE_FLAG))
 		flags |= FLAGS_SHARED;
-
+	/*设置了FUTEX_CLOCK_REALTIME 则flag标记为实时时钟*/
 	if (op & FUTEX_CLOCK_REALTIME) {
 		flags |= FLAGS_CLOCKRT;
+		/* 仅 FUTEX_WAIT_BITSET, FUTEX_WAIT_REQUEUE_PI 和 FUTEX_LOCK_PI2 支持实时时钟*/
 		if (cmd != FUTEX_WAIT_BITSET && cmd != FUTEX_WAIT_REQUEUE_PI &&
 		    cmd != FUTEX_LOCK_PI2)
-			return -ENOSYS;
+			return -ENOSYS;//不支持这些命令，说明非实时时钟
 	}
 
+	/*根据不同的 cmd (futex 操作类型) 执行相应的处理*/
 	switch (cmd) {
+
+	/*1.将线程加入等待队列，进入阻塞态*/
 	case FUTEX_WAIT:
-		val3 = FUTEX_BITSET_MATCH_ANY;
-		fallthrough;
-	case FUTEX_WAIT_BITSET:
+		val3 = FUTEX_BITSET_MATCH_ANY;//设置val3参数，匹配任何 bitset
+		fallthrough;//去执行下面的futex_wait
+	case FUTEX_WAIT_BITSET://调用futex_wait去将线程加入等待队列
 		return futex_wait(uaddr, flags, val, timeout, val3);
+	
+	/*2.唤醒等待的线程*/
 	case FUTEX_WAKE:
-		val3 = FUTEX_BITSET_MATCH_ANY;
+		val3 = FUTEX_BITSET_MATCH_ANY;//设置val3，使用默认的 bitset 匹配任何位
 		fallthrough;
-	case FUTEX_WAKE_BITSET:
+	case FUTEX_WAKE_BITSET://调用 futex_wake 函数，唤醒最多 val 个等待在 uaddr 上的线程
 		return futex_wake(uaddr, flags, val, val3);
+	
+	/*3.将等待的线程重新排队到另一个 futex 地址 uaddr2*/
 	case FUTEX_REQUEUE:
+		//调用 futex_requeue，将 val 个线程从 uaddr 移到 uaddr2
 		return futex_requeue(uaddr, flags, uaddr2, val, val2, NULL, 0);
+	
+	/*4.*/
 	case FUTEX_CMP_REQUEUE:
 		return futex_requeue(uaddr, flags, uaddr2, val, val2, &val3, 0);
 	case FUTEX_WAKE_OP:

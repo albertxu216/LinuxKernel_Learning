@@ -140,9 +140,21 @@ void futex_wake_mark(struct wake_q_head *wake_q, struct futex_q *q)
 /*
  * Wake up waiters matching bitset queued on this futex (uaddr).
  */
+/*
+ * 唤醒在指定 futex (uaddr) 上排队的与 bitset 匹配的等待者 (waiters)。
+ * 
+ * 参数:
+ * uaddr  - 指向用户空间的 futex 地址
+ * flags  - 指定 futex 的一些行为，比如是否共享
+ * nr_wake - 要唤醒的等待者数量
+ * bitset - 用于匹配等待者的位集
+ * 
+ * 返回值:
+ * 成功时返回实际唤醒的等待者数量，失败时返回负数错误码。
+ */
 int futex_wake(u32 __user *uaddr, unsigned int flags, int nr_wake, u32 bitset)
 {
-	struct futex_hash_bucket *hb;
+	struct futex_hash_bucket *hb;//futex锁对应的hash桶
 	struct futex_q *this, *next;
 	union futex_key key = FUTEX_KEY_INIT;
 	int ret;
