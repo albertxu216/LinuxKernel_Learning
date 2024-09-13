@@ -155,28 +155,31 @@ void futex_wake_mark(struct wake_q_head *wake_q, struct futex_q *q)
 int futex_wake(u32 __user *uaddr, unsigned int flags, int nr_wake, u32 bitset)
 {
 	struct futex_hash_bucket *hb;//futex锁对应的hash桶
-	struct futex_q *this, *next;
-	union futex_key key = FUTEX_KEY_INIT;
-	int ret;
-	DEFINE_WAKE_Q(wake_q);
+	struct futex_q *this, *next;// 遍历 futex 等待队列的指针
+	union futex_key key = FUTEX_KEY_INIT;// futex 键值，用于标识 futex
+	int ret;// 返回值，记录唤醒的任务数量或错误码
+	DEFINE_WAKE_Q(wake_q);// 定义用于存储将要唤醒的任务队列
 
 	if (!bitset)
 		return -EINVAL;
-
+	// 获取 futex 键值，根据 futex 的共享标志 (flags) 来获取 key 值
 	ret = get_futex_key(uaddr, flags & FLAGS_SHARED, &key, FUTEX_READ);
 	if (unlikely(ret != 0))
 		return ret;
-
+	// 通过 key 来查找对应的哈希桶 (hash bucket)
 	hb = futex_hash(&key);
 
-	/* Make sure we really have tasks to wakeup */
+	/* 确保哈哈希桶中有对应的等待者，没有的话就没必要再唤醒 */
 	if (!futex_hb_waiters_pending(hb))
 		return ret;
-
+	/*通过对哈希桶自旋锁上锁，来保证没有其他线程对该哈西桶进行修改*/
 	spin_lock(&hb->lock);
 
+	/*遍历哈希桶链表中的等待队列*/
 	plist_for_each_entry_safe(this, next, &hb->chain, list) {
+		/* 判断当前进程的key和给定的key是否一致*/
 		if (futex_match (&this->key, &key)) {
+			/*带有优先级或实时标记的等待者不唤醒*/
 			if (this->pi_state || this->rt_waiter) {
 				ret = -EINVAL;
 				break;
@@ -185,14 +188,15 @@ int futex_wake(u32 __user *uaddr, unsigned int flags, int nr_wake, u32 bitset)
 			/* Check if one of the bits is set in both bitsets */
 			if (!(this->bitset & bitset))
 				continue;
-
+			/*将符合条件的等待者标记为可唤醒状态*/
 			futex_wake_mark(&wake_q, this);
 			if (++ret >= nr_wake)
 				break;
 		}
 	}
-
+	/*释放哈希桶锁*/
 	spin_unlock(&hb->lock);
+	/*唤醒已经标记的任务*/
 	wake_up_q(&wake_q);
 	return ret;
 }
@@ -337,7 +341,10 @@ static long futex_wait_restart(struct restart_block *restart);
  * @q:		the futex_q to queue up on
  * @timeout:	the prepared hrtimer_sleeper, or null for no timeout
  */
-/*将当前线程挂到指定的哈希桶中,将当前线程状态设置为阻塞态,设置一个定时器并使用schedule让当前cpu去调度*/
+
+/*1.将当前线程挂到指定的哈希桶中
+ *2.将当前线程状态设置为阻塞态
+ *3.设置一个定时器并使用schedule让当前cpu去调度*/
 void futex_wait_queue(struct futex_hash_bucket *hb, struct futex_q *q,
 			    struct hrtimer_sleeper *timeout)
 {
@@ -672,11 +679,18 @@ retry:
 	ret = futex_wait_setup(uaddr, val, flags, &q, &hb);//获取hash key 并确定uaddr为预期值;
 	if (ret)
 		goto out;
-	/*将当前线程对应的futex_q节点加入Futex 对应的futex等待队列,并进入睡眠状态,等待被唤醒*/
-	/* futex_queue and wait for wakeup, timeout, or a signal. */
-	futex_wait_queue(hb, &q, to);
 
-	/* If we were woken (and unqueued), we succeeded, whatever. */
+	/*futex_wait_queue
+	 *1.将当前线程加入futex等待队列,
+	 *2.启动定时器，
+	 *3.重新调度
+	 */
+	futex_wait_queue(hb, &q, to);
+/****************************************************************/
+/*                      线程被阻塞,等待被唤醒                     */
+/****************************************************************/
+
+	/* 线程被唤醒，并成功从等待队列移除 */
 	ret = 0;
 	if (!futex_unqueue(&q))
 		goto out;
@@ -701,9 +715,9 @@ retry:
 	restart->futex.time = *abs_time;
 	restart->futex.bitset = bitset;
 	restart->futex.flags = flags | FLAGS_HAS_TIMEOUT;
+
 	/*设置重启函数为 futex_wait_restart*/
 	ret = set_restart_fn(restart, futex_wait_restart);
-
 out:
 	/*如果定时器存在，取消定时器并销毁 hrtimer*/
 	if (to) {
