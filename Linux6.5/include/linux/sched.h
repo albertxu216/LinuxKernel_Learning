@@ -741,9 +741,9 @@ struct task_struct {
 	 * For reasons of header soup (see current_thread_info()), this
 	 * must be the first element of task_struct.
 	 */
-	struct thread_info		thread_info;
+	struct thread_info		thread_info;//线程相关信息
 #endif
-	unsigned int			__state;
+	unsigned int			__state;//进程状态
 
 #ifdef CONFIG_PREEMPT_RT
 	/* saved state for "spinlock sleepers" */
@@ -754,20 +754,20 @@ struct task_struct {
 	 * This begins the randomizable portion of task_struct. Only
 	 * scheduling-critical items should be added above here.
 	 */
-	randomized_struct_fields_start
+	randomized_struct_fields_start//将下面的字段进行随机排列，以增强安全性
 
-	void				*stack;
-	refcount_t			usage;
+	void				*stack;//指向进程内核栈的指针
+	refcount_t			usage;//进程描述符的引用计数
 	/* Per task flags (PF_*), defined further below: */
-	unsigned int			flags;
+	unsigned int			flags;//进程的标志集合
 	unsigned int			ptrace;
 
 #ifdef CONFIG_SMP
-	int				on_cpu;
+	int				on_cpu;//1表示正在cpu上运行，0表示未运行
 	struct __call_single_node	wake_entry;
-	unsigned int			wakee_flips;
-	unsigned long			wakee_flip_decay_ts;
-	struct task_struct		*last_wakee;
+	unsigned int			wakee_flips;//用于wake_affine特性
+	unsigned long			wakee_flip_decay_ts;//上一次wakee_flips的时间
+	struct task_struct		*last_wakee;//上一次唤醒的是哪个进程
 
 	/*
 	 * recent_used_cpu is initially set as the last CPU used by a task
@@ -777,19 +777,24 @@ struct task_struct {
 	 * used CPU that may be idle.
 	 */
 	int				recent_used_cpu;
-	int				wake_cpu;
+	int				wake_cpu;//上一次允许在哪个CPU上
 #endif
+
+/*进程在运行队列的状态
+ * 0表示进程不在运行队列中；
+ * 1表示进程正在运行队列中排队；
+ * 2表示进程队列间迁移
+*/
 	int				on_rq;
+	int				prio;//进程调度优先级
+	int				static_prio;//进程的静态优先级
+	int				normal_prio;//进程动态优先级
+	unsigned int			rt_priority;//进程实时优先级
 
-	int				prio;
-	int				static_prio;
-	int				normal_prio;
-	unsigned int			rt_priority;
-
-	struct sched_entity		se;
-	struct sched_rt_entity		rt;
-	struct sched_dl_entity		dl;
-	const struct sched_class	*sched_class;
+	struct sched_entity		se;//进程普通调度实体
+	struct sched_rt_entity		rt;//进程的实时调度实体
+	struct sched_dl_entity		dl;//进程的限期调度实体
+	const struct sched_class	*sched_class;//进程的调度类
 
 #ifdef CONFIG_SCHED_CORE
 	struct rb_node			core_node;
@@ -798,7 +803,7 @@ struct task_struct {
 #endif
 
 #ifdef CONFIG_CGROUP_SCHED
-	struct task_group		*sched_task_group;
+	struct task_group		*sched_task_group;//进程所在的调度组
 #endif
 
 #ifdef CONFIG_UCLAMP_TASK
@@ -825,11 +830,11 @@ struct task_struct {
 	unsigned int			btrace_seq;
 #endif
 
-	unsigned int			policy;
+	unsigned int			policy;//进程的调度策略
 	int				nr_cpus_allowed;
 	const cpumask_t			*cpus_ptr;
 	cpumask_t			*user_cpus_ptr;
-	cpumask_t			cpus_mask;
+	cpumask_t			cpus_mask;//进程亲和关系掩码
 	void				*migration_pending;
 #ifdef CONFIG_SMP
 	unsigned short			migration_disabled;
@@ -837,7 +842,7 @@ struct task_struct {
 	unsigned short			migration_flags;
 
 #ifdef CONFIG_PREEMPT_RCU
-	int				rcu_read_lock_nesting;
+	int				rcu_read_lock_nesting;//可抢占RCU所使用的嵌套计数器
 	union rcu_special		rcu_read_unlock_special;
 	struct list_head		rcu_node_entry;
 	struct rcu_node			*rcu_blocked_node;
@@ -862,20 +867,20 @@ struct task_struct {
 
 	struct sched_info		sched_info;
 
-	struct list_head		tasks;
+	struct list_head		tasks;//将所有进程链接在一起的链表结构
 #ifdef CONFIG_SMP
 	struct plist_node		pushable_tasks;
 	struct rb_node			pushable_dl_tasks;
 #endif
+/*内存相关字段*/
+	struct mm_struct		*mm;//进程的内存描述符
+	struct mm_struct		*active_mm;//进程活动内存描述符（内核级线程使用）
 
-	struct mm_struct		*mm;
-	struct mm_struct		*active_mm;
-
-	int				exit_state;
-	int				exit_code;
-	int				exit_signal;
+	int				exit_state;//进程的退出状态
+	int				exit_code;//进程通过exit()退出时的退出码,这个代码通常用于告诉父进程该进程的退出原因
+	int				exit_signal;//当进程退出时，发送给父进程的信号
 	/* The signal sent when the parent dies: */
-	int				pdeath_signal;
+	int				pdeath_signal;//父进程终止时发送给当前进程的信号
 	/* JOBCTL_*, siglock protected: */
 	unsigned long			jobctl;
 
@@ -959,8 +964,8 @@ struct task_struct {
 
 	struct restart_block		restart_block;
 
-	pid_t				pid;
-	pid_t				tgid;
+	pid_t				pid;//当前进程号
+	pid_t				tgid;//线程组号
 
 #ifdef CONFIG_STACKPROTECTOR
 	/* Canary value for the -fstack-protector GCC feature: */
@@ -973,17 +978,17 @@ struct task_struct {
 	 */
 
 	/* Real parent process: */
-	struct task_struct __rcu	*real_parent;
+	struct task_struct __rcu	*real_parent;//进程的真实父进程
 
 	/* Recipient of SIGCHLD, wait4() reports: */
-	struct task_struct __rcu	*parent;
+	struct task_struct __rcu	*parent;//进程的当前父进程
 
 	/*
 	 * Children/sibling form the list of natural children:
 	 */
-	struct list_head		children;
-	struct list_head		sibling;
-	struct task_struct		*group_leader;
+	struct list_head		children;//子进程链表
+	struct list_head		sibling;//兄弟进程链表
+	struct task_struct		*group_leader;//进程所在的线程组组长
 
 	/*
 	 * 'ptraced' is the list of tasks this task is using ptrace() on.
@@ -991,13 +996,13 @@ struct task_struct {
 	 * This includes both natural children and PTRACE_ATTACH targets.
 	 * 'ptrace_entry' is this task's link on the p->parent->ptraced list.
 	 */
-	struct list_head		ptraced;
+	struct list_head		ptraced;//当前进程正在跟着的所有任务
 	struct list_head		ptrace_entry;
 
 	/* PID/PID hash table linkage. */
-	struct pid			*thread_pid;
-	struct hlist_node		pid_links[PIDTYPE_MAX];
-	struct list_head		thread_group;
+	struct pid			*thread_pid;//指向当前线程pid的指针
+	struct hlist_node		pid_links[PIDTYPE_MAX];//用于查找命名空间相关的PID结构数组
+	struct list_head		thread_group;//链表头,当前线程组中的其他线程
 	struct list_head		thread_node;
 
 	struct completion		*vfork_done;
@@ -1011,14 +1016,15 @@ struct task_struct {
 	/* PF_KTHREAD | PF_IO_WORKER */
 	void				*worker_private;
 
-	u64				utime;
-	u64				stime;
+/*时间相关字段*/
+	u64				utime;//进程花费在用户态的绝对时间
+	u64				stime;//进程花费在内核态的绝对时间
 #ifdef CONFIG_ARCH_HAS_SCALED_CPUTIME
-	u64				utimescaled;
-	u64				stimescaled;
+	u64				utimescaled;//进程花费在用户态的相对时间
+	u64				stimescaled;//进程花费在内核态的相对时间
 #endif
-	u64				gtime;
-	struct prev_cputime		prev_cputime;
+	u64				gtime;//进程花费在客户态的时间(虚拟机进程)
+	struct prev_cputime		prev_cputime;//记录进程上一次使用cpu的时间
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
 	struct vtime			vtime;
 #endif
@@ -1027,11 +1033,11 @@ struct task_struct {
 	atomic_t			tick_dep_mask;
 #endif
 	/* Context switch counts: */
-	unsigned long			nvcsw;
-	unsigned long			nivcsw;
+	unsigned long			nvcsw;//自愿上下文切换,进程主动下CPU时
+	unsigned long			nivcsw;//非自愿上下文切换,进程被强制下CPU时
 
 	/* Monotonic time in nsecs: */
-	u64				start_time;
+	u64				start_time;//被系统调度的开始时间,单位纳秒
 
 	/* Boot based time in nsecs: */
 	u64				start_boottime;
@@ -1083,17 +1089,17 @@ struct task_struct {
 	unsigned long			last_switch_time;
 #endif
 	/* Filesystem information: */
-	struct fs_struct		*fs;
+	struct fs_struct		*fs;//文件系统信息
 
 	/* Open file information: */
-	struct files_struct		*files;
+	struct files_struct		*files;//打开的文件描述符信息
 
 #ifdef CONFIG_IO_URING
 	struct io_uring_task		*io_uring;
 #endif
 
 	/* Namespaces: */
-	struct nsproxy			*nsproxy;
+	struct nsproxy			*nsproxy;//命名空间
 
 	/* Signal handlers: */
 	struct signal_struct		*signal;
@@ -1535,7 +1541,7 @@ struct task_struct {
 	 * New fields for task_struct should be added above here, so that
 	 * they are included in the randomized portion of task_struct.
 	 */
-	randomized_struct_fields_end
+	randomized_struct_fields_end//将上面的字段进行随机排列，以增强安全性
 
 	/* CPU-specific state of this task: */
 	struct thread_struct		thread;
