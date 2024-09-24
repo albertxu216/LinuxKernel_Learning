@@ -547,27 +547,27 @@ struct sched_statistics {
 
 struct sched_entity {
 	/* For load-balancing: */
-	struct load_weight		load;
-	struct rb_node			run_node;
-	struct list_head		group_node;
-	unsigned int			on_rq;
+	struct load_weight		load;//调度实体的权重，影响其在调度决策中的优先级
+	struct rb_node			run_node;//红黑树节点，调度实体在调度器所维护的红黑树中的节点
+	struct list_head		group_node;//链表节点，用于管理调度实体的组
+	unsigned int			on_rq;//调度实体是否在运行队列中
 
-	u64				exec_start;
-	u64				sum_exec_runtime;
-	u64				vruntime;
-	u64				prev_sum_exec_runtime;
+	u64				exec_start;//调度实体虚拟时间的起始时间
+	u64				sum_exec_runtime;//调度实体的累计总运行时间，是真实时间
+	u64				vruntime;//调度实体的虚拟运行时间
+	u64				prev_sum_exec_runtime;//上一次调度时累计运行的时间
 
-	u64				nr_migrations;
+	u64				nr_migrations;//该调度实体发生迁移的次数
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
-	int				depth;
-	struct sched_entity		*parent;
+	int				depth;//调度实体在调度层次中的深度
+	struct sched_entity		*parent;//指向父调度实体
 	/* rq on which this entity is (to be) queued: */
-	struct cfs_rq			*cfs_rq;
+	struct cfs_rq			*cfs_rq;//指向调度实体将去排队的cfs运行队列
 	/* rq "owned" by this entity/group: */
-	struct cfs_rq			*my_q;
+	struct cfs_rq			*my_q;//当前调度实体所拥有的cfs运行队列
 	/* cached value of my_q->h_nr_running */
-	unsigned long			runnable_weight;
+	unsigned long			runnable_weight;//当前可运行任务的权重
 #endif
 
 #ifdef CONFIG_SMP
@@ -577,7 +577,7 @@ struct sched_entity {
 	 * Put into separate cache line so it does not
 	 * collide with read-mostly values above.
 	 */
-	struct sched_avg		avg;
+	struct sched_avg		avg;//调度实体的负载平均值
 #endif
 };
 

@@ -956,17 +956,17 @@ struct balance_callback {
  */
 struct rq {
 	/* runqueue lock: */
-	raw_spinlock_t		__lock;
+	raw_spinlock_t		__lock;//保护就绪队列的自旋锁，
 
 	/*
 	 * nr_running and cpu_load should be in the same cacheline because
 	 * remote CPUs use both these fields when doing load calculation.
 	 */
-	unsigned int		nr_running;
+	unsigned int		nr_running;//当前运行队列中运行的任务数量
 #ifdef CONFIG_NUMA_BALANCING
-	unsigned int		nr_numa_running;
-	unsigned int		nr_preferred_running;
-	unsigned int		numa_migrate_on;
+	unsigned int		nr_numa_running;// NUMA 体系结构中运行的任务数量
+	unsigned int		nr_preferred_running;//首选 NUMA 节点中运行的任务数量
+	unsigned int		numa_migrate_on;//是否需要 NUMA 迁移
 #endif
 #ifdef CONFIG_NO_HZ_COMMON
 #ifdef CONFIG_SMP
@@ -981,7 +981,7 @@ struct rq {
 #ifdef CONFIG_SMP
 	unsigned int		ttwu_pending;
 #endif
-	u64			nr_switches;
+	u64			nr_switches;//进程上下文切换次数
 
 #ifdef CONFIG_UCLAMP_TASK
 	/* Utilization clamp values based on CPU's RUNNABLE tasks */
@@ -990,9 +990,9 @@ struct rq {
 #define UCLAMP_FLAG_IDLE 0x01
 #endif
 
-	struct cfs_rq		cfs;
-	struct rt_rq		rt;
-	struct dl_rq		dl;
+	struct cfs_rq		cfs;//完全公平调度 (CFS) 运行队列
+	struct rt_rq		rt;//实时调度器的运行队列
+	struct dl_rq		dl;//限时调度器的运行队列
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/* list of leaf cfs_rq on this CPU: */
@@ -1006,16 +1006,16 @@ struct rq {
 	 * one CPU and if it got migrated afterwards it may decrease
 	 * it on another CPU. Always updated under the runqueue lock:
 	 */
-	unsigned int		nr_uninterruptible;
+	unsigned int		nr_uninterruptible;//统计不可中断(uninterruptible)状态的进程进入就绪队列的数量
 
-	struct task_struct __rcu	*curr;
-	struct task_struct	*idle;
-	struct task_struct	*stop;
-	unsigned long		next_balance;
-	struct mm_struct	*prev_mm;
+	struct task_struct __rcu	*curr;//指向正在运行的进程
+	struct task_struct	*idle;//指向当前cpu的idle进程
+	struct task_struct	*stop;//指向系统的stop进程
+	unsigned long		next_balance;//下次做负载均衡的时间
+	struct mm_struct	*prev_mm;//进程切换时用于指向前任进程的内存描述符 mm
 
-	unsigned int		clock_update_flags;
-	u64			clock;
+	unsigned int		clock_update_flags;//用于更新就绪队列时钟的标志位
+	u64			clock;//每次时钟节拍到来是会更新这个时钟
 	/* Ensure that all clocks are in the same cache line */
 	u64			clock_task ____cacheline_aligned;
 	u64			clock_pelt;
@@ -1039,34 +1039,34 @@ struct rq {
 #endif
 
 #ifdef CONFIG_SMP
-	struct root_domain		*rd;
-	struct sched_domain __rcu	*sd;
+	struct root_domain		*rd;//调度域的根
+	struct sched_domain __rcu	*sd;//指向CPU最低等级的调度域
 
-	unsigned long		cpu_capacity;
-	unsigned long		cpu_capacity_orig;
+	unsigned long		cpu_capacity;//CPU的量化算力
+	unsigned long		cpu_capacity_orig;//CPU最高算力（额定算力）
 
-	struct balance_callback *balance_callback;
+	struct balance_callback *balance_callback;//负载均衡的回调函数
 
-	unsigned char		nohz_idle_balance;
-	unsigned char		idle_balance;
+	unsigned char		nohz_idle_balance;//无时钟空闲负载平衡标志
+	unsigned char		idle_balance;//空闲负载平衡标志
 
-	unsigned long		misfit_task_load;
+	unsigned long		misfit_task_load;//不合适进程（misfit_task）的量化负载
 
 	/* For active balancing */
-	int			active_balance;
-	int			push_cpu;
+	int			active_balance;//主动负载均衡
+	int			push_cpu;//迁移的目标CPU
 	struct cpu_stop_work	active_balance_work;
 
 	/* CPU of this runqueue: */
-	int			cpu;
-	int			online;
+	int			cpu;//当前运行队列在哪个CPU上
+	int			online;//当前CPU的状态，active/online
 
-	struct list_head cfs_tasks;
+	struct list_head cfs_tasks;//可运行状态的调度实体
 
-	struct sched_avg	avg_rt;
-	struct sched_avg	avg_dl;
+	struct sched_avg	avg_rt;//实时就绪队列的负载情况
+	struct sched_avg	avg_dl;//限时调度队列的负载情况
 #ifdef CONFIG_HAVE_SCHED_AVG_IRQ
-	struct sched_avg	avg_irq;
+	struct sched_avg	avg_irq;//
 #endif
 #ifdef CONFIG_SCHED_THERMAL_PRESSURE
 	struct sched_avg	avg_thermal;
