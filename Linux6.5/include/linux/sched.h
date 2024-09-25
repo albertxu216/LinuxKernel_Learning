@@ -492,13 +492,40 @@ struct util_est {
  * issues.
  */
 struct sched_avg {
-	u64				last_update_time;
+	u64				last_update_time;//上一次更新时间，表示负载信息最后更新的时刻
+	/*load_sum 对于:
+	 *1.调度实体:累计衰减时间
+	 *2.运行队列:调度队列中所有进程的累计工作总负载
+	 */
 	u64				load_sum;
+	/*runnable_sum 对于:
+	 *1.调度实体:累计衰减时间
+	 *2.运行队列:调度队列中可运行状态进程的工作总负载
+	 */
 	u64				runnable_sum;
+	/*util_sum:用于衡量CPU的使用率
+	 *1.正在运行状态下的累计衰减时间，
+	 *2.统计的是时间，还没有乘调度实体或调度队列的权重；
+	 */
 	u32				util_sum;
+	/*period_contrib：
+	 *1.上一次时间采样时，不能凑成一个周期的剩余时间；
+	 */
 	u32				period_contrib;
+	/*load_avg：；量化负载
+	 *1.调度实体：可运行状态下的量化负载，可以衡量迁移进程的负载量
+	 *2.调度队列：调度队列中的总量化负载；
+	*/
 	unsigned long			load_avg;
+	/*runnable_avg
+	 *1.调度队列：同load_avg；
+	 *2.就绪队列中所有可运行状态下进程的总量化负载，可反映CPU的负载大小
+	 */
 	unsigned long			runnable_avg;
+	/*util_avg：实际算力
+	 *1.调度实体：可反映该调度实体的实际算力
+	 *2.调度队列：可反映CPU的实际算力需求
+	 */
 	unsigned long			util_avg;
 	struct util_est			util_est;
 } ____cacheline_aligned;
