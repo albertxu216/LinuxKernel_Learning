@@ -206,7 +206,7 @@ typedef struct { /* nothing */ } lockdep_map_p;
  * case with the MAPLE_USE_RCU flag, which indicates the tree is currently in
  * RCU mode.  This mode was added to allow the tree to reuse nodes instead of
  * re-allocating and RCU freeing nodes when there is a single user.
- */
+ */=
 struct maple_tree {
 	union {
 		spinlock_t	ma_lock;

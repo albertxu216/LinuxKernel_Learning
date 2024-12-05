@@ -1040,22 +1040,30 @@ void wake_up_q(struct wake_q_head *head)
  */
 void resched_curr(struct rq *rq)
 {
-	struct task_struct *curr = rq->curr;
+	struct task_struct *curr = rq->curr;//就绪队列当前进程
 	int cpu;
 
-	lockdep_assert_rq_held(rq);
-
+	lockdep_assert_rq_held(rq);//确保运行队列被锁定；
+	/*1.检查当前任务是否已经被标记为需要重新调度，防止重复标记*/
 	if (test_tsk_need_resched(curr))
 		return;
 
+	/*2.重新调度相关工作：
+	 *	2.1运行队列所属cpu是当前cpu，即处理本地cpu情况：
+	 *	   set_tsk_need_resched(curr)更改 task_struct下面thread_info->flag为TIF_NEED_RESCHED；
+	 *	   set_preempt_need_resched()设置内核的抢占标志位，允许调度器在下一次中断时触发任务切换
+	 */
 	cpu = cpu_of(rq);
-
 	if (cpu == smp_processor_id()) {
 		set_tsk_need_resched(curr);
 		set_preempt_need_resched();
 		return;
 	}
-
+	/*2.重新调度相关工作：
+	 *	2.2处理远程CPU情况：
+	 *	   set_nr_and_not_polling(curr)标记当前任务为TASK_RUNNING并判断目标CPU是否是空闲轮询状态
+	 *	   smp_send_reschedule(cpu)发送信号，通知目标 CPU 触发调度操作。
+	 */
 	if (set_nr_and_not_polling(curr))
 		smp_send_reschedule(cpu);
 	else
@@ -2079,6 +2087,7 @@ static inline void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
 	}
 
 	uclamp_rq_inc(rq, p);
+	/*实际是通过当前进程所属调度类，其对应的enqueue_task操作*/
 	p->sched_class->enqueue_task(rq, p, flags);
 
 	if (sched_core_enabled(rq))
@@ -2101,7 +2110,7 @@ static inline void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 	uclamp_rq_dec(rq, p);
 	p->sched_class->dequeue_task(rq, p, flags);
 }
-
+/*将任务放入对应的运行队列中*/
 void activate_task(struct rq *rq, struct task_struct *p, int flags)
 {
 	if (task_on_rq_migrating(p))
@@ -2109,6 +2118,7 @@ void activate_task(struct rq *rq, struct task_struct *p, int flags)
 	if (flags & ENQUEUE_MIGRATED)
 		sched_mm_cid_migrate_to(rq, p);
 
+	/*放入操作*/
 	enqueue_task(rq, p, flags);
 
 	p->on_rq = TASK_ON_RQ_QUEUED;
@@ -2197,17 +2207,28 @@ static inline void check_class_changed(struct rq *rq, struct task_struct *p,
 	} else if (oldprio != p->prio || dl_task(p))
 		p->sched_class->prio_changed(rq, p, oldprio);
 }
-
+/*check_preempt_curr()
+ *1.检查新任务是否需要抢占当前正在运行的任务，
+ *  以确保调度器能够正确响应高优先级任务的到来。
+ *2.该函数基于任务的调度类和优先级来决定是否需要进行抢占，
+ *  或设置相关标志以通知调度器在下次时钟中断时进行任务切换。
+ */
 void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
-{
+{	
+	/*1.判断新进程和当前运行队列正在运行的任务的调度类是否相同*/
 	if (p->sched_class == rq->curr->sched_class)
+		/*若二者调度类相同，则调用该调度类的check_preempt_curr函数去检查是否需要抢占当前任务*/
 		rq->curr->sched_class->check_preempt_curr(rq, p, flags);
 	else if (sched_class_above(p->sched_class, rq->curr->sched_class))
+		/*若新进程所属调度类优于当前运行队列调度类，则调用resched_curr强制重新调度*/
 		resched_curr(rq);
 
 	/*
 	 * A queue event has occurred, and we're going to schedule.  In
 	 * this case, we can save a useless back to back clock update.
+	 */
+	/*如果当前任务已经被标记为需要重新调度，
+	 *并且还在运行队列中，那么可以跳过不必要的时钟更新操作
 	 */
 	if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
 		rq_clock_skip_update(rq);
@@ -3610,6 +3631,7 @@ out:
 
 /*
  * The caller (fork, wakeup) owns p->pi_lock, ->cpus_ptr is stable.
+ * 选择一个合适的CPU
  */
 static inline
 int select_task_rq(struct task_struct *p, int cpu, int wake_flags)
@@ -4198,7 +4220,7 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 {
 	unsigned long flags;
 	int cpu, success = 0;
-
+	/*关抢占*/
 	preempt_disable();
 	if (p == current) {
 		/*
@@ -4725,13 +4747,13 @@ late_initcall(sched_core_sysctl_init);
  * fork()/clone()-time setup:
  */
 int sched_fork(unsigned long clone_flags, struct task_struct *p)
-{
+{	/*1.初始化调度相关结构体*/
 	__sched_fork(clone_flags, p);
 	/*
-	 * We mark the process as NEW here. This guarantees that
-	 * nobody will actually run it, and a signal or other external
-	 * event cannot wake it up and insert it on the runqueue either.
+	 * 我们在这里将进程标记为NEW，这保证了没有人会真正运行它，
+	 * 而且信号或其他外部事件也不能唤醒它并将其插入到 runqueue 中。
 	 */
+	/*2.将新进程的状态改为TASK_NEW*/
 	p->__state = TASK_NEW;
 
 	/*
@@ -4850,6 +4872,7 @@ void wake_up_new_task(struct task_struct *p)
 	struct rq *rq;
 
 	raw_spin_lock_irqsave(&p->pi_lock, rf.flags);
+	/*1.将任务的状态改为运行态*/
 	WRITE_ONCE(p->__state, TASK_RUNNING);
 #ifdef CONFIG_SMP
 	/*
@@ -4862,14 +4885,17 @@ void wake_up_new_task(struct task_struct *p)
 	 */
 	p->recent_used_cpu = task_cpu(p);
 	rseq_migrate(p);
+	/*2.为进程指定运行队列*/
 	__set_task_cpu(p, select_task_rq(p, task_cpu(p), WF_FORK));
 #endif
+	/*3.获取任务所属的运行队列*/
 	rq = __task_rq_lock(p, &rf);
-	update_rq_clock(rq);
-	post_init_entity_util_avg(p);
-
+	update_rq_clock(rq);//更新运行队列时间
+	post_init_entity_util_avg(p);//对新任务的负载统计信息进行初始化
+	/*4.将任务放到运行队列中*/
 	activate_task(rq, p, ENQUEUE_NOCLOCK);
 	trace_sched_wakeup_new(p);
+	/*5.检查新任务是否需要抢占当前正在运行的任务*/
 	check_preempt_curr(rq, p, WF_FORK);
 #ifdef CONFIG_SMP
 	if (p->sched_class->task_woken) {
@@ -5639,11 +5665,11 @@ static inline u64 cpu_resched_latency(struct rq *rq) { return 0; }
  */
 void scheduler_tick(void)
 {
-	int cpu = smp_processor_id();
-	struct rq *rq = cpu_rq(cpu);
-	struct task_struct *curr = rq->curr;
+	int cpu = smp_processor_id();//当前CPU号
+	struct rq *rq = cpu_rq(cpu);//当前核的运行队列
+	struct task_struct *curr = rq->curr;//该cpu上运行的进程
 	struct rq_flags rf;
-	unsigned long thermal_pressure;
+	unsigned long thermal_pressure;/*热压*/
 	u64 resched_latency;
 
 	if (housekeeping_cpu(cpu, HK_TYPE_TICK))
@@ -5652,13 +5678,17 @@ void scheduler_tick(void)
 	sched_clock_tick();
 
 	rq_lock(rq, &rf);
-
+	/*1.更新运行队列的时钟计数*/
 	update_rq_clock(rq);
 	thermal_pressure = arch_scale_thermal_pressure(cpu_of(rq));
 	update_thermal_load_avg(rq_clock_thermal(rq), rq, thermal_pressure);
+	/*2.判断是否需要调度下一个任务
+	 *  不同调度类使用对应的task_tick函数实现
+	 */
 	curr->sched_class->task_tick(rq, curr, 0);
 	if (sched_feat(LATENCY_WARN))
 		resched_latency = cpu_resched_latency(rq);
+	/*3.更新运行队列的cpu_load数组*/
 	calc_global_load_tick(rq);
 	sched_core_tick(rq);
 	task_tick_mm_cid(rq, curr);
@@ -5674,8 +5704,9 @@ void scheduler_tick(void)
 		wq_worker_tick(curr);
 
 #ifdef CONFIG_SMP
+	/*4.触发SMP负载均衡*/
 	rq->idle_balance = idle_cpu(cpu);
-	trigger_load_balance(rq);
+	trigger_load_balance(rq);//触发一个软中断,让ksoftirq线程处理真正地负载均衡过程
 #endif
 }
 

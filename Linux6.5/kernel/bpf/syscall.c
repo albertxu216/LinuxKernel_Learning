@@ -5235,7 +5235,7 @@ static int __sys_bpf(int cmd, bpfptr_t uattr, unsigned int size)
 
 	return err;
 }
-
+/*bpf系统调用入口*/
 SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)
 {
 	return __sys_bpf(cmd, USER_BPFPTR(uattr), size);

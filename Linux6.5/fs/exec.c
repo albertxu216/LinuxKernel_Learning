@@ -249,17 +249,18 @@ static void flush_arg_page(struct linux_binprm *bprm, unsigned long pos,
 {
 	flush_cache_page(bprm->vma, pos, page_to_pfn(page));
 }
-
+/*为新进程的栈分配申请内存并初始化*/
 static int __bprm_mm_init(struct linux_binprm *bprm)
 {
 	int err;
 	struct vm_area_struct *vma = NULL;
 	struct mm_struct *mm = bprm->mm;
-
+	/*1. 分配新的虚拟内存区域 (VMA) 用于堆栈*/
 	bprm->vma = vma = vm_area_alloc(mm);
 	if (!vma)
 		return -ENOMEM;
-	vma_set_anonymous(vma);
+	
+	vma_set_anonymous(vma);//设置 VMA 为匿名类型（没有关联到具体文件）
 
 	if (mmap_write_lock_killable(mm)) {
 		err = -EINTR;
@@ -267,23 +268,22 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	}
 
 	/*
-	 * Place the stack at the largest stack address the architecture
-	 * supports. Later, we'll move this to an appropriate place. We don't
-	 * use STACK_TOP because that can depend on attributes which aren't
-	 * configured yet.
+	 * 3. 初始化堆栈的虚拟内存区域，暂时将堆栈放置在架构支持的最大地址空间
+	 * 堆栈最终会被移到适当的位置，但此时尚未配置相关属性
 	 */
 	BUILD_BUG_ON(VM_STACK_FLAGS & VM_STACK_INCOMPLETE_SETUP);
-	vma->vm_end = STACK_TOP_MAX;
-	vma->vm_start = vma->vm_end - PAGE_SIZE;
-	vm_flags_init(vma, VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP);
-	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
-
+	vma->vm_end = STACK_TOP_MAX;// 将堆栈顶端设为架构支持的最大堆栈地址
+	vma->vm_start = vma->vm_end - PAGE_SIZE;// 堆栈从堆栈顶往下扩展，初始大小为一页
+	vm_flags_init(vma, VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP);// 初始化堆栈区域的标志
+	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);// 设置页面的访问权限
+	/*4.将vma插入mm中*/
 	err = insert_vm_struct(mm, vma);
 	if (err)
 		goto err;
 
 	mm->stack_vm = mm->total_vm = 1;
 	mmap_write_unlock(mm);
+	/*5.设置堆栈指针到堆栈顶部，并返回成功*/
 	bprm->p = vma->vm_end - sizeof(void *);
 	return 0;
 err:
@@ -345,7 +345,7 @@ static void flush_arg_page(struct linux_binprm *bprm, unsigned long pos,
 		struct page *page)
 {
 }
-
+/*为新进程的栈申请一页虚拟地址空间*/
 static int __bprm_mm_init(struct linux_binprm *bprm)
 {
 	bprm->p = PAGE_SIZE * MAX_ARG_PAGES - sizeof(void *);
@@ -364,12 +364,13 @@ static bool valid_arg_len(struct linux_binprm *bprm, long len)
  * vm_area_struct.  We don't have enough context at this point to set the stack
  * flags, permissions, and offset, so we use temporary values.  We'll update
  * them later in setup_arg_pages().
+ * 创建一个新的mm_struct，并申请一页栈；
  */
 static int bprm_mm_init(struct linux_binprm *bprm)
 {
 	int err;
 	struct mm_struct *mm = NULL;
-
+	/*1.申请一个全新的m_struct，地址空间*/
 	bprm->mm = mm = mm_alloc();
 	err = -ENOMEM;
 	if (!mm)
@@ -379,7 +380,7 @@ static int bprm_mm_init(struct linux_binprm *bprm)
 	task_lock(current->group_leader);
 	bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
 	task_unlock(current->group_leader);
-
+	/*2.给新进程的栈申请一页虚拟地址空间，并将栈指针记录下来*/
 	err = __bprm_mm_init(bprm);
 	if (err)
 		goto err;
@@ -1510,6 +1511,7 @@ static void free_bprm(struct linux_binprm *bprm)
 
 static struct linux_binprm *alloc_bprm(int fd, struct filename *filename)
 {
+	/*1.为bprm申请内存·*/
 	struct linux_binprm *bprm = kzalloc(sizeof(*bprm), GFP_KERNEL);
 	int retval = -ENOMEM;
 	if (!bprm)
@@ -1529,7 +1531,7 @@ static struct linux_binprm *alloc_bprm(int fd, struct filename *filename)
 		bprm->filename = bprm->fdpath;
 	}
 	bprm->interp = bprm->filename;
-
+	/*2.为进程申请一个全新的地址空间mm_struct*/
 	retval = bprm_mm_init(bprm);
 	if (retval)
 		goto out_free;
@@ -1851,7 +1853,7 @@ static int bprm_execve(struct linux_binprm *bprm,
 	retval = security_bprm_creds_for_exec(bprm);
 	if (retval)
 		goto out;
-
+	/*执行程序*/
 	retval = exec_binprm(bprm);
 	if (retval < 0)
 		goto out;
@@ -1883,7 +1885,10 @@ out_unmark:
 
 	return retval;
 }
-
+/*do_execveat_common
+ *1.通过alloc_bprm申请并初始化bprm
+ *2.通过bprm_execve执行加载工作
+ */
 static int do_execveat_common(int fd, struct filename *filename,
 			      struct user_arg_ptr argv,
 			      struct user_arg_ptr envp,
@@ -1910,7 +1915,7 @@ static int do_execveat_common(int fd, struct filename *filename,
 	/* We're below the limit (still or again), so we don't want to make
 	 * further execve() calls fail. */
 	current->flags &= ~PF_NPROC_EXCEEDED;
-
+	/*1.申请初始化bprm*/
 	bprm = alloc_bprm(fd, filename);
 	if (IS_ERR(bprm)) {
 		retval = PTR_ERR(bprm);
@@ -1959,7 +1964,7 @@ static int do_execveat_common(int fd, struct filename *filename,
 			goto out_free;
 		bprm->argc = 1;
 	}
-
+	/*2.实际执行新程序*/
 	retval = bprm_execve(bprm, fd, filename, flags);
 out_free:
 	free_bprm(bprm);
@@ -2032,9 +2037,10 @@ static int do_execve(struct filename *filename,
 	const char __user *const __user *__argv,
 	const char __user *const __user *__envp)
 {
+	/*设置传参与环境变量*/
 	struct user_arg_ptr argv = { .ptr.native = __argv };
 	struct user_arg_ptr envp = { .ptr.native = __envp };
-	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
+	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);//调用do_execveat_common去执行加载程序
 }
 
 static int do_execveat(int fd, struct filename *filename,
@@ -2104,13 +2110,17 @@ void set_dumpable(struct mm_struct *mm, int value)
 
 	set_mask_bits(&mm->flags, MMF_DUMPABLE_MASK, value);
 }
-
+/*execve系统调用入口
+ *@filename：可执行文件名；
+ *@argv：传参，参数列表；
+ *@envp：环境变量；
+ */
 SYSCALL_DEFINE3(execve,
 		const char __user *, filename,
 		const char __user *const __user *, argv,
 		const char __user *const __user *, envp)
 {
-	return do_execve(getname(filename), argv, envp);
+	return do_execve(getname(filename), argv, envp);//调用do_execve函数
 }
 
 SYSCALL_DEFINE5(execveat,

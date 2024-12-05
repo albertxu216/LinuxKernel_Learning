@@ -2242,6 +2242,7 @@ static inline bool vma_expand_down(struct vm_area_struct *vma, unsigned long add
  *
  * If no vma is found or it can't be expanded, it returns NULL and has
  * dropped the lock.
+ * 扩充栈空间
  */
 struct vm_area_struct *expand_stack(struct mm_struct *mm, unsigned long addr)
 {

@@ -2013,6 +2013,7 @@ static inline struct task_group *task_group(struct task_struct *p)
 
 static inline void __set_task_cpu(struct task_struct *p, unsigned int cpu)
 {
+	/*1.选择一个合适的CPU*/
 	set_task_rq(p, cpu);
 #ifdef CONFIG_SMP
 	/*

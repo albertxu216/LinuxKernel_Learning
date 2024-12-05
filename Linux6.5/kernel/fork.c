@@ -1099,17 +1099,18 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 {
 	struct task_struct *tsk;
 	int err;
-
+	/*0.获取分配task_struct的首选NUMA节点*/ 
 	if (node == NUMA_NO_NODE)
 		node = tsk_fork_get_node(orig);
+	/*1.新进程分配一个task_struct*/
 	tsk = alloc_task_struct_node(node);
 	if (!tsk)
 		return NULL;
-
+	/*2.函数把父进程的task_struct内容直接复制到新进程的task_struct中*/
 	err = arch_dup_task_struct(tsk, orig);
 	if (err)
 		goto free_tsk;
-
+	/*3.为新进程分配内核栈空间*/
 	err = alloc_thread_stack_node(tsk, node);
 	if (err)
 		goto free_tsk;
@@ -1136,6 +1137,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 	setup_thread_stack(tsk, orig);
 	clear_user_return_notifier(tsk);
 	clear_tsk_need_resched(tsk);
+	/*4.内核栈的最高地址处设置一个幻数STACKENDMAGIC，用于溢出检测。*/
 	set_task_stack_end_magic(tsk);
 	clear_syscall_work_syscall_user_dispatch(tsk);
 
@@ -1676,16 +1678,16 @@ static struct mm_struct *dup_mm(struct task_struct *tsk,
 {
 	struct mm_struct *mm;
 	int err;
-
+	/*1.为子进程申请mm并分配空间*/
 	mm = allocate_mm();
 	if (!mm)
 		goto fail_nomem;
-
+	/*2.将父进程mm中的内容全部复制到子进程中，仅复制结构体中的内容，不复制内存*/
 	memcpy(mm, oldmm, sizeof(*mm));
-
+	/*3.初始化子进程内存描述符,并为子进程分配PGD*/
 	if (!mm_init(mm, tsk, mm->user_ns))
 		goto fail_nomem;
-
+	/*3.复制父进程地址空间的页表到子进程中*/
 	err = dup_mmap(mm, oldmm);
 	if (err)
 		goto free_pt;
@@ -1711,14 +1713,15 @@ fail_nomem:
 static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 {
 	struct mm_struct *mm, *oldmm;
-
+	/*1.初始化新进程的页面故障计数器*/
 	tsk->min_flt = tsk->maj_flt = 0;
+	/*2.初始化新进程的上下文切换计数器*/
 	tsk->nvcsw = tsk->nivcsw = 0;
 #ifdef CONFIG_DETECT_HUNG_TASK
 	tsk->last_switch_count = tsk->nvcsw + tsk->nivcsw;
 	tsk->last_switch_time = 0;
 #endif
-
+	/*3.初始化新进程的mm和active_mm*/
 	tsk->mm = NULL;
 	tsk->active_mm = NULL;
 
@@ -1727,10 +1730,13 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 	 *
 	 * We need to steal a active VM for that..
 	 */
+	/*4.判断当前进程是否是一个内核线程，若是内核线程则直接返回*/
 	oldmm = current->mm;
 	if (!oldmm)
 		return 0;
-
+	/*5.如果clone_flags设置了CLONE_VM，子进程和父进程共享虚拟地址空间
+	 *	否则通过dup_mm复制父进程的页表
+	 */
 	if (clone_flags & CLONE_VM) {
 		mmget(oldmm);
 		mm = oldmm;
@@ -1749,6 +1755,7 @@ static int copy_mm(unsigned long clone_flags, struct task_struct *tsk)
 static int copy_fs(unsigned long clone_flags, struct task_struct *tsk)
 {
 	struct fs_struct *fs = current->fs;
+	/*1.如果设置了CLONE_FS，则增加fs的引用次数，并结束复制*/ 
 	if (clone_flags & CLONE_FS) {
 		/* tsk->fs is already what we want */
 		spin_lock(&fs->lock);
@@ -1760,6 +1767,7 @@ static int copy_fs(unsigned long clone_flags, struct task_struct *tsk)
 		spin_unlock(&fs->lock);
 		return 0;
 	}
+	/*2.通过copy_fs_struct复制fs*/
 	tsk->fs = copy_fs_struct(fs);
 	if (!tsk->fs)
 		return -ENOMEM;
@@ -1783,12 +1791,12 @@ static int copy_files(unsigned long clone_flags, struct task_struct *tsk,
 		tsk->files = NULL;
 		goto out;
 	}
-
+	/*1.如果设置了CLONE_FILES，则增加源文件描述符的引用次数，并结束复制*/
 	if (clone_flags & CLONE_FILES) {
 		atomic_inc(&oldf->count);
 		goto out;
 	}
-
+	/*2.通过dup_fd复制files*/
 	newf = dup_fd(oldf, NR_OPEN_MAX, &error);
 	if (!newf)
 		goto out;
@@ -2327,6 +2335,7 @@ __latent_entropy struct task_struct *copy_process(
 		goto fork_out;
 
 	retval = -ENOMEM;
+	/*创建并复制父进程的task_struct结构体*/
 	p = dup_task_struct(current, node);
 	if (!p)
 		goto fork_out;
@@ -2861,12 +2870,12 @@ struct task_struct *create_io_thread(int (*fn)(void *), void *arg, int node)
 }
 
 /*
- *  Ok, this is the main fork-routine.
+ * kernel_clone：主要的 fork 函数，负责创建新的进程或线程。
  *
- * It copies the process, and if successful kick-starts
- * it and waits for it to finish using the VM if required.
+ * 它通过复制父进程来创建子进程，成功后启动子进程，
+ * 如果需要，等待子进程使用虚拟内存操作完成。
  *
- * args->exit_signal is expected to be checked for sanity by the caller.
+ * args->exit_signal 由调用者检查其合法性。
  */
 pid_t kernel_clone(struct kernel_clone_args *args)
 {
@@ -2878,13 +2887,10 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 	pid_t nr;
 
 	/*
-	 * For legacy clone() calls, CLONE_PIDFD uses the parent_tid argument
-	 * to return the pidfd. Hence, CLONE_PIDFD and CLONE_PARENT_SETTID are
-	 * mutually exclusive. With clone3() CLONE_PIDFD has grown a separate
-	 * field in struct clone_args and it still doesn't make sense to have
-	 * them both point at the same memory location. Performing this check
-	 * here has the advantage that we don't need to have a separate helper
-	 * to check for legacy clone().
+	 * 如果是传统的 clone() 系统调用，CLONE_PIDFD 使用 parent_tid 来返回 pidfd。
+	 * 因此，CLONE_PIDFD 和 CLONE_PARENT_SETTID 是互斥的。
+	 * 如果这两个标志设置了并且它们指向同一块内存，则返回错误。
+	 * 在 clone3() 中，CLONE_PIDFD 使用单独的字段，但不应该同时指向相同的内存位置。
 	 */
 	if ((args->flags & CLONE_PIDFD) &&
 	    (args->flags & CLONE_PARENT_SETTID) &&
@@ -2892,65 +2898,65 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 		return -EINVAL;
 
 	/*
-	 * Determine whether and which event to report to ptracer.  When
-	 * called from kernel_thread or CLONE_UNTRACED is explicitly
-	 * requested, no event is reported; otherwise, report if the event
-	 * for the type of forking is enabled.
+	 * 判断是否需要向 ptrace 发送事件，若 CLONE_UNTRACED 被设置，则不进行跟踪。
+	 * 根据不同的 clone_flags 确定跟踪事件的类型，如 vfork、fork 或 clone 事件。
 	 */
-	if (!(clone_flags & CLONE_UNTRACED)) {
+	if (!(clone_flags & CLONE_UNTRACED)) {//需要ptrace跟踪
 		if (clone_flags & CLONE_VFORK)
-			trace = PTRACE_EVENT_VFORK;
+			trace = PTRACE_EVENT_VFORK;//跟踪标志设置为vfork
 		else if (args->exit_signal != SIGCHLD)
-			trace = PTRACE_EVENT_CLONE;
+			trace = PTRACE_EVENT_CLONE;//跟踪标志设置为clone
 		else
-			trace = PTRACE_EVENT_FORK;
+			trace = PTRACE_EVENT_FORK;//跟踪标志设置为fork
 
 		if (likely(!ptrace_event_enabled(current, trace)))
 			trace = 0;
 	}
-
+	/*通过copy_process来复制父进程，生成子进程*/
 	p = copy_process(NULL, trace, NUMA_NO_NODE, args);
 	add_latent_entropy();
-
+	/*如果子进程创建失败，返回错误码*/
 	if (IS_ERR(p))
 		return PTR_ERR(p);
 
 	/*
-	 * Do this prior waking up the new thread - the thread pointer
-	 * might get invalid after that point, if the thread exits quickly.
+	 * 子进程创建成功，记录一次 fork 调度事件，通知调度器。
+	 * 这需要在唤醒子进程之前完成，因为子进程可能会快速退出，
+	 * 导致 task_struct 无效。
 	 */
 	trace_sched_process_fork(current, p);
-
+	/*获取新创建进程的pid*/
 	pid = get_task_pid(p, PIDTYPE_PID);
+	/*通过命名空间获取虚拟pid号*/
 	nr = pid_vnr(pid);
 
 	if (clone_flags & CLONE_PARENT_SETTID)
 		put_user(nr, args->parent_tid);
-
+	/*如果是vfork,则需要扣留父进程,直至子进程执行execve或exit*/
 	if (clone_flags & CLONE_VFORK) {
-		p->vfork_done = &vfork;
-		init_completion(&vfork);
+		p->vfork_done = &vfork;//设置vfork_done完成量
+		init_completion(&vfork);//初始化完成量
 		get_task_struct(p);
 	}
-
+	/*如果启用了 LRU_GENERATION 并且没有设置 CLONE_VM，进行 LRU 管理操作*/
 	if (IS_ENABLED(CONFIG_LRU_GEN) && !(clone_flags & CLONE_VM)) {
 		/* lock the task to synchronize with memcg migration */
 		task_lock(p);
 		lru_gen_add_mm(p->mm);
 		task_unlock(p);
 	}
-
-	wake_up_new_task(p);
+	/*将新创建的任务加入到就绪队列中*/
+	wake_up_new_task(p); 
 
 	/* forking complete and child started to run, tell ptracer */
 	if (unlikely(trace))
 		ptrace_event_pid(trace, pid);
-
+	/*对于vfork,使用wait_for_vfork_done 让父进程等待子进程执行exec()或exit()*/
 	if (clone_flags & CLONE_VFORK) {
 		if (!wait_for_vfork_done(p, &vfork))
 			ptrace_event_pid(PTRACE_EVENT_VFORK_DONE, pid);
 	}
-
+	/*释放进程 PID 的引用*/
 	put_pid(pid);
 	return nr;
 }
@@ -2989,7 +2995,7 @@ pid_t user_mode_thread(int (*fn)(void *), void *arg, unsigned long flags)
 
 	return kernel_clone(&args);
 }
-
+/*fork系统调用入口*/
 #ifdef __ARCH_WANT_SYS_FORK
 SYSCALL_DEFINE0(fork)
 {
@@ -3005,7 +3011,7 @@ SYSCALL_DEFINE0(fork)
 #endif
 }
 #endif
-
+/*vfork系统调用入口*/
 #ifdef __ARCH_WANT_SYS_VFORK
 SYSCALL_DEFINE0(vfork)
 {

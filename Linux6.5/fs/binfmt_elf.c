@@ -819,13 +819,14 @@ static int parse_elf_properties(struct file *f, const struct elf_phdr *phdr,
 
 	return ret == -ENOENT ? 0 : ret;
 }
-
+/*函数加载工作*/
 static int load_elf_binary(struct linux_binprm *bprm)
 {
 	struct file *interpreter = NULL; /* to shut gcc up */
 	unsigned long load_bias = 0, phdr_addr = 0;
 	int first_pt_load = 1;
 	unsigned long error;
+	/*1.ELF文件头解析*/
 	struct elf_phdr *elf_ppnt, *elf_phdata, *interp_elf_phdata = NULL;
 	struct elf_phdr *elf_property_phdata = NULL;
 	unsigned long elf_bss, elf_brk;
@@ -847,7 +848,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 	/* First of all, some simple consistency checks */
 	if (memcmp(elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
 		goto out;
-
+	/*1.1对头部进行一系列的合法性判断，不合法则直接退出*/
 	if (elf_ex->e_type != ET_EXEC && elf_ex->e_type != ET_DYN)
 		goto out;
 	if (!elf_check_arch(elf_ex))
@@ -856,7 +857,7 @@ static int load_elf_binary(struct linux_binprm *bprm)
 		goto out;
 	if (!bprm->file->f_op->mmap)
 		goto out;
-
+	/*2.读取Program Header*/
 	elf_phdata = load_elf_phdrs(elf_ex, bprm->file);
 	if (!elf_phdata)
 		goto out;
@@ -998,6 +999,7 @@ out_free_interp:
 		goto out_free_dentry;
 
 	/* Flush all traces of the currently running executable */
+	/*3.清空父进程继承来的资源*/
 	retval = begin_new_exec(bprm);
 	if (retval)
 		goto out_free_dentry;
@@ -1046,6 +1048,7 @@ out_free_interp:
 			/* There was a PT_LOAD segment with p_memsz > p_filesz
 			   before this one. Map anonymous pages, if needed,
 			   and clear the area.  */
+			/*5.数据内存申请&堆初始化*/
 			retval = set_brk(elf_bss + load_bias,
 					 elf_brk + load_bias,
 					 bss_prot);
