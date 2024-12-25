@@ -223,9 +223,13 @@ void page_alloc_sysctl_init(void);
  * by a const pointer.
  */
 struct alloc_context {
+	/*1.指向内存节点node的zonelist成员*/
 	struct zonelist *zonelist;
+	/*2.内存节点node的掩码*/
 	nodemask_t *nodemask;
+	/*3.表示首选zone对应的zoneref结构体*/
 	struct zoneref *preferred_zoneref;
+	/*4.迁移类型*/
 	int migratetype;
 
 	/*
@@ -238,7 +242,9 @@ struct alloc_context {
 	 * the target zone since higher zone than this index cannot be
 	 * usable for this allocation request.
 	 */
+	/*5.允许内存分配的最高zone*/
 	enum zone_type highest_zoneidx;
+	/*6.是否将脏页在各个zone之间分散分配*/
 	bool spread_dirty_pages;
 };
 

@@ -226,14 +226,14 @@ static phys_addr_t __init max_zone_phys(unsigned int zone_bits)
 
 	return min(zone_mask, memblock_end_of_DRAM() - 1) + 1;
 }
-
+/*初始化zone的函数，*/
 static void __init zone_sizes_init(void)
 {
 	unsigned long max_zone_pfns[MAX_NR_ZONES]  = {0};
 	unsigned int __maybe_unused acpi_zone_dma_bits;
 	unsigned int __maybe_unused dt_zone_dma_bits;
 	phys_addr_t __maybe_unused dma32_phys_limit = max_zone_phys(32);
-
+/*1.初始化DMA区域*/
 #ifdef CONFIG_ZONE_DMA
 	acpi_zone_dma_bits = fls64(acpi_iort_dma_get_max_cpu_address());
 	dt_zone_dma_bits = fls64(of_dma_get_max_cpu_address(NULL));
@@ -241,15 +241,19 @@ static void __init zone_sizes_init(void)
 	arm64_dma_phys_limit = max_zone_phys(zone_dma_bits);
 	max_zone_pfns[ZONE_DMA] = PFN_DOWN(arm64_dma_phys_limit);
 #endif
+/*2.初始化DMA32区域*/
 #ifdef CONFIG_ZONE_DMA32
-	max_zone_pfns[ZONE_DMA32] = PFN_DOWN(dma32_phys_limit);
+	max_zone_pfns[ZONE_DMA32] = PFN_DOWN(dma32_phys_limit);//设置为4GB物理地址上限
 	if (!arm64_dma_phys_limit)
 		arm64_dma_phys_limit = dma32_phys_limit;
 #endif
+/*3.设置NORMAL区域*/
 	if (!arm64_dma_phys_limit)
 		arm64_dma_phys_limit = PHYS_MASK + 1;
-	max_zone_pfns[ZONE_NORMAL] = max_pfn;
-
+	max_zone_pfns[ZONE_NORMAL] = max_pfn;//系统可管理的全部内存
+/*4.初始化所有区域
+ *  根据max_zone_pfns数组完成所有内存区域的初始化
+ */
 	free_area_init(max_zone_pfns);
 }
 

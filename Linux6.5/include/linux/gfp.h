@@ -224,16 +224,24 @@ static inline void warn_if_node_offline(int this_node, gfp_t gfp_mask)
 	dump_stack();
 }
 
-/*
- * Allocate pages, preferring the node given as nid. The node must be valid and
- * online. For more general interface, see alloc_pages_node().
- */
+/**
+ * @brief 用于在指定 NUMA 节点上分配内存页的辅助函数
+ *
+ * @param nid 指定的NUMA id ,用于从该节点分配内存
+ * @param gfp_mask GFP标志掩码；
+ * @param order 分配物理页数
+ **/
 static inline struct page *
 __alloc_pages_node(int nid, gfp_t gfp_mask, unsigned int order)
 {
+	/* 1.合法检查
+	 * 1.1 确保nid NUMA id 在合法范围内
+	 * 1.2 检查目标 NUMA 节点是否在线
+	 */
 	VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
 	warn_if_node_offline(nid, gfp_mask);
-
+	
+	/* 2.调用__alloc_pages()函数分配物理页面*/
 	return __alloc_pages(gfp_mask, order, nid, NULL);
 }
 
@@ -246,17 +254,21 @@ struct folio *__folio_alloc_node(gfp_t gfp, unsigned int order, int nid)
 	return __folio_alloc(gfp, order, nid, NULL);
 }
 
-/*
- * Allocate pages, preferring the node given as nid. When nid == NUMA_NO_NODE,
- * prefer the current CPU's closest node. Otherwise node must be valid and
- * online.
- */
+/** 
+ * @brief 在指定 NUMA 节点上分配连续页面,如果调用者未指定节点
+ * @brief (nid == NUMA_NO_NODE)，函数会选择当前 CPU 所属的节点
+ *
+ * @param nid: NUMA 节点 ID
+ * @param gfp_mask 分配掩码,控制分配行为
+ * @param order 要分配物理页面的页面数
+**/
 static inline struct page *alloc_pages_node(int nid, gfp_t gfp_mask,
 						unsigned int order)
 {
+	/*1.若未指定NUMA节点,则通过numa_mem_id获取当前cpu所属节点*/
 	if (nid == NUMA_NO_NODE)
 		nid = numa_mem_id();
-
+	/*2.根据指定的 NUMA 节点执行页面分配*/
 	return __alloc_pages_node(nid, gfp_mask, order);
 }
 
@@ -266,6 +278,12 @@ struct folio *folio_alloc(gfp_t gfp, unsigned order);
 struct folio *vma_alloc_folio(gfp_t gfp, int order, struct vm_area_struct *vma,
 		unsigned long addr, bool hugepage);
 #else
+/*
+ *分配2的order次幂个连续物理页面
+ * 1.gfp_mask 分配掩码，描述页面分配方法的标志
+ * 2.order 分配页面的结束，order必须小于MAX_ORDER
+ * 3.返回值是第一个物理页面的page数据结构；
+ */
 static inline struct page *alloc_pages(gfp_t gfp_mask, unsigned int order)
 {
 	return alloc_pages_node(numa_node_id(), gfp_mask, order);
@@ -277,6 +295,7 @@ static inline struct folio *folio_alloc(gfp_t gfp, unsigned int order)
 #define vma_alloc_folio(gfp, order, vma, addr, hugepage)		\
 	folio_alloc(gfp, order)
 #endif
+/*分配一个物理页面*/
 #define alloc_page(gfp_mask) alloc_pages(gfp_mask, 0)
 static inline struct page *alloc_page_vma(gfp_t gfp,
 		struct vm_area_struct *vma, unsigned long addr)
@@ -292,7 +311,7 @@ extern unsigned long get_zeroed_page(gfp_t gfp_mask);
 void *alloc_pages_exact(size_t size, gfp_t gfp_mask) __alloc_size(1);
 void free_pages_exact(void *virt, size_t size);
 __meminit void *alloc_pages_exact_nid(int nid, size_t size, gfp_t gfp_mask) __alloc_size(2);
-
+/*默认order为0,即申请1个物理页面*/
 #define __get_free_page(gfp_mask) \
 		__get_free_pages((gfp_mask), 0)
 
@@ -315,8 +334,9 @@ static inline void *page_frag_alloc(struct page_frag_cache *nc,
 }
 
 extern void page_frag_free(void *addr);
-
+/*释放一个物理页面*/
 #define __free_page(page) __free_pages((page), 0)
+/*通过虚拟地址释放单个物理页面*/
 #define free_page(addr) free_pages((addr), 0)
 
 void page_alloc_init_cpuhp(void);

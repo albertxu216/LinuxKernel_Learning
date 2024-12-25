@@ -809,10 +809,10 @@ enum zone_type {
 #define ASYNC_AND_SYNC 2
 
 struct zone {
-	/* Read-mostly fields */
+	/* Read-mostly fields */struct pglist_data
 
 	/* zone watermarks, access with *_wmark_pages(zone) macros */
-	unsigned long _watermark[NR_WMARK];
+	unsigned long _watermark[NR_WMARK];//记录三个水位线，最低警戒水位、低水位、高水位
 	unsigned long watermark_boost;
 
 	unsigned long nr_reserved_highatomic;
@@ -826,13 +826,13 @@ struct zone {
 	 * recalculated at runtime if the sysctl_lowmem_reserve_ratio sysctl
 	 * changes.
 	 */
-	long lowmem_reserve[MAX_NR_ZONES];
+	long lowmem_reserve[MAX_NR_ZONES];//防止页面分配器过度使用低端zone的内存
 
 #ifdef CONFIG_NUMA
 	int node;
 #endif
-	struct pglist_data	*zone_pgdat;
-	struct per_cpu_pages	__percpu *per_cpu_pageset;
+	struct pglist_data	*zone_pgdat;//指向内存节点
+	struct per_cpu_pages	__percpu *per_cpu_pageset;//用于维护每个CPU上的一系列页面，减少自旋锁的争用
 	struct per_cpu_zonestat	__percpu *per_cpu_zonestats;
 	/*
 	 * the high and batch values are copied to individual pagesets for
@@ -850,7 +850,7 @@ struct zone {
 #endif /* CONFIG_SPARSEMEM */
 
 	/* zone_start_pfn == zone_start_paddr >> PAGE_SHIFT */
-	unsigned long		zone_start_pfn;
+	unsigned long		zone_start_pfn;//zone的起始帧号
 
 	/*
 	 * spanned_pages is the total pages spanned by the zone, including
@@ -894,9 +894,9 @@ struct zone {
 	 * mem_hotplug_begin/done(). Any reader who can't tolerant drift of
 	 * present_pages should use get_online_mems() to get a stable value.
 	 */
-	atomic_long_t		managed_pages;
-	unsigned long		spanned_pages;
-	unsigned long		present_pages;
+	atomic_long_t		managed_pages;//zone中被伙伴系统管理的页面数
+	unsigned long		spanned_pages;//zone包含的页面数量
+	unsigned long		present_pages;//zone中实际管理的页面数量
 #if defined(CONFIG_MEMORY_HOTPLUG)
 	unsigned long		present_early_pages;
 #endif
@@ -904,7 +904,7 @@ struct zone {
 	unsigned long		cma_pages;
 #endif
 
-	const char		*name;
+	const char		*name;//zone的名称
 
 #ifdef CONFIG_MEMORY_ISOLATION
 	/*
@@ -926,8 +926,7 @@ struct zone {
 	CACHELINE_PADDING(_pad1_);
 
 	/* free areas of different sizes */
-	struct free_area	free_area[MAX_ORDER + 1];
-
+	struct free_area	free_area[MAX_ORDER + 1];//管理zone下面页面的伙伴系统，管理空闲页块链表的数组
 #ifdef CONFIG_UNACCEPTED_MEMORY
 	/* Pages to be accepted. All pages on the list are MAX_ORDER */
 	struct list_head	unaccepted_pages;
@@ -937,7 +936,7 @@ struct zone {
 	unsigned long		flags;
 
 	/* Primarily protects free_area */
-	spinlock_t		lock;
+	spinlock_t		lock;//并行访问时，保护zone的自旋锁；
 
 	/* Write-intensive fields used by compaction and vmstats. */
 	CACHELINE_PADDING(_pad2_);
@@ -979,7 +978,7 @@ struct zone {
 
 	CACHELINE_PADDING(_pad3_);
 	/* Zone statistics */
-	atomic_long_t		vm_stat[NR_VM_ZONE_STAT_ITEMS];
+	atomic_long_t		vm_stat[NR_VM_ZONE_STAT_ITEMS];//zone计数值
 	atomic_long_t		vm_numa_event[NR_VM_NUMA_EVENT_ITEMS];
 } ____cacheline_internodealigned_in_smp;
 
@@ -1255,7 +1254,8 @@ struct memory_failure_stats {
  * On NUMA machines, each NUMA node would have a pg_data_t to describe
  * it's memory layout. On UMA machines there is a single pglist_data which
  * describes the whole memory.
- *
+ * NUMA架构的机器,每个NUMA节点对应一个pglist_data,
+ * UMA架构的机器,只有一个节点,故仅对应一个pgilst_data结构体来描绘整个内存;
  * Memory statistics and page replacement data structures are maintained on a
  * per-zone basis.
  */
@@ -1543,7 +1543,8 @@ static inline bool has_managed_dma(void)
 
 #ifndef CONFIG_NUMA
 
-extern struct pglist_data contig_page_data;
+extern struct pglist_data contig_page_data;//全局变量来描绘UMA的pglist_data结构体
+//NODE_DATA指针用来管理NUMA架构中的各个节点及其对应的pglist_data结构体
 static inline struct pglist_data *NODE_DATA(int nid)
 {
 	return &contig_page_data;

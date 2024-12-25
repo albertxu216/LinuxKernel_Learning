@@ -3041,12 +3041,9 @@ static bool zone_allows_reclaim(struct zone *local_zone, struct zone *zone)
 #endif	/* CONFIG_NUMA */
 
 /*
- * The restriction on ZONE_DMA32 as being a suitable zone to use to avoid
- * fragmentation is subtle. If the preferred zone was HIGHMEM then
- * premature use of a lower zone may cause lowmem pressure problems that
- * are worse than fragmentation. If the next zone is ZONE_DMA then it is
- * probably too small. It only makes sense to spread allocations to avoid
- * fragmentation between the Normal and DMA32 zones.
+ * 根据内存分配的 GFP 标志和当前目标 zone，决定是否启用避免碎片化的分配标志。
+ * 用于决定内存分配时是否需要启用避免碎片化（ALLOC_NOFRAGMENT）的标志位。
+ * 此函数的逻辑主要围绕 ZONE_NORMAL 和 ZONE_DMA32 的关系进行设计
  */
 static inline unsigned int
 alloc_flags_nofragment(struct zone *zone, gfp_t gfp_mask)
@@ -3099,57 +3096,57 @@ static struct page *
 get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
 						const struct alloc_context *ac)
 {
-	struct zoneref *z;
-	struct zone *zone;
-	struct pglist_data *last_pgdat = NULL;
-	bool last_pgdat_dirty_ok = false;
-	bool no_fallback;
+	struct zoneref *z;//当前正在处理的 zone 的引用
+	struct zone *zone;//当前正在处理的 zone
+	struct pglist_data *last_pgdat = NULL;//最近访问的 NUMA 节点数据
+	bool last_pgdat_dirty_ok = false;//最近访问节点是否可分配脏页
+	bool no_fallback;//是否避免碎片化的标志
 
 retry:
 	/*
-	 * Scan zonelist, looking for a zone with enough free.
-	 * See also cpuset_node_allowed() comment in kernel/cgroup/cpuset.c.
+	 * 在 zonelist 中扫描，寻找有足够内存可分配的 zone。
+	 * 可能受 cpuset 和其他限制影响。
 	 */
-	no_fallback = alloc_flags & ALLOC_NOFRAGMENT;
-	z = ac->preferred_zoneref;
+	no_fallback = alloc_flags & ALLOC_NOFRAGMENT;//表示是否需要避免内存碎片化；
+	z = ac->preferred_zoneref;//获取zonelist中首选和推荐的zone；
+
+	/*1.使用for_next_zone_zonelist_nodemask宏，
+	 *  从推荐的zone开始遍历当前节点中highest_zoneidx以上的zone*/
 	for_next_zone_zonelist_nodemask(zone, z, ac->highest_zoneidx,
 					ac->nodemask) {
 		struct page *page;
 		unsigned long mark;
 
+		/*1.1 检查cpuset限制
+		 *    如果开启了cpuset限制，应检查当前zone是否允许分配；
+		 *    如果zone不再允许的cpu集合中，则跳过该zone；
+		 */
 		if (cpusets_enabled() &&
 			(alloc_flags & ALLOC_CPUSET) &&
 			!__cpuset_zone_allowed(zone, gfp_mask))
 				continue;
 		/*
-		 * When allocating a page cache page for writing, we
-		 * want to get it from a node that is within its dirty
-		 * limit, such that no single node holds more than its
-		 * proportional share of globally allowed dirty pages.
-		 * The dirty limits take into account the node's
-		 * lowmem reserves and high watermark so that kswapd
-		 * should be able to balance it without having to
-		 * write pages from its LRU list.
-		 *
-		 * XXX: For now, allow allocations to potentially
-		 * exceed the per-node dirty limit in the slowpath
-		 * (spread_dirty_pages unset) before going into reclaim,
-		 * which is important when on a NUMA setup the allowed
-		 * nodes are together not big enough to reach the
-		 * global limit.  The proper fix for these situations
-		 * will require awareness of nodes in the
-		 * dirty-throttling and the flusher threads.
+		 * 在为写操作分配页面缓存时，内核会优先选择脏页未超出限制的节点，
+		 * 以避免单个节点负担过多脏页，从而影响全局内存平衡和性能。
+		 * 在慢速路径中（spread_dirty_pages 未设置时），
+		 * 允许暂时超出节点的脏页限制，以提高分配成功率，
+		 * 特别是在 NUMA 系统中节点内存较小时。
+		 * 这种实现是权宜之计，未来需要通过节点感知的脏页限制和优化刷新线程机制进一步完善。
 		 */
+		 /*1.2 脏页限制
+		  * a.当分配页面用于写入时，需要确保脏页不会超过节点的限制;
+		  * b.检查当前 zone 所属的节点是否可以分配脏页。如果不允许，跳过该 zone。
+		  */
 		if (ac->spread_dirty_pages) {
-			if (last_pgdat != zone->zone_pgdat) {
+			if (last_pgdat != zone->zone_pgdat) {//检查节点是否发生变化；
 				last_pgdat = zone->zone_pgdat;
 				last_pgdat_dirty_ok = node_dirty_ok(zone->zone_pgdat);
 			}
 
-			if (!last_pgdat_dirty_ok)
+			if (!last_pgdat_dirty_ok)//当前节点不允许分配脏页，跳过
 				continue;
 		}
-
+		/*1.3 */
 		if (no_fallback && nr_online_nodes > 1 &&
 		    zone != ac->preferred_zoneref->zone) {
 			int local_nid;
@@ -4222,15 +4219,27 @@ fail:
 got_pg:
 	return page;
 }
-
+/**
+ * @brief 初始化与内存分配相关的上下文参数，将其放在alloc_context结构体中
+ *
+ * @param gfp_mask 分配标志掩码，描述分配的类型和方式
+ * @param order 分配多少页面
+ * @param preferred_nid 表示首选的 NUMA 节点，用于优先从该节点分配内存
+ * @param ac 内存分配上下文，用于存储分配相关的参数和配置；
+ * @param alloc_gfp 指向实际分配时使用的 gfp_mas
+ * @param alloc_flags 存储额外的分配标志，用于影响内存分配的行为
+**/
 static inline bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
 		int preferred_nid, nodemask_t *nodemask,
 		struct alloc_context *ac, gfp_t *alloc_gfp,
 		unsigned int *alloc_flags)
 {
+	/*1.通过gfp_zone() 获取最高可用内存区域的索引*/
 	ac->highest_zoneidx = gfp_zone(gfp_mask);
+	/*2.通过node_zonelist()获取首选节点对应的zonelist；*/
 	ac->zonelist = node_zonelist(preferred_nid, gfp_mask);
 	ac->nodemask = nodemask;
+	/*3.gfp_migratetype()根据分配掩码gfp_mask获取页面迁移类型*/
 	ac->migratetype = gfp_migratetype(gfp_mask);
 
 	if (cpusets_enabled()) {
@@ -4249,20 +4258,15 @@ static inline bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
 
 	if (should_fail_alloc_page(gfp_mask, order))
 		return false;
-
+	/*4.根据 gfp_mask 和 alloc_flags 的初始值生成最终的分配标志*/
 	*alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, *alloc_flags);
 
-	/* Dirty zone balancing only done in the fast path */
+	/*5.根据gfp_mask设置脏页扩散标志，允许在分配过程中扩散脏页*/
 	ac->spread_dirty_pages = (gfp_mask & __GFP_WRITE);
 
-	/*
-	 * The preferred zone is used for statistics but crucially it is
-	 * also used as the starting point for the zonelist iterator. It
-	 * may get reset for allocations that ignore memory policies.
-	 */
+	/*6.获取 zonelist 中第一个符合分配条件的 zone，并将其设置为首选区域。*/
 	ac->preferred_zoneref = first_zones_zonelist(ac->zonelist,
 					ac->highest_zoneidx, ac->nodemask);
-
 	return true;
 }
 
@@ -4435,61 +4439,68 @@ failed:
 }
 EXPORT_SYMBOL_GPL(__alloc_pages_bulk);
 
-/*
- * This is the 'heart' of the zoned buddy allocator.
- */
+
+/**
+ * @brief 伙伴分配器的核心
+ * @brief 尝试分配一组连续的物理内存页，返回对应的 struct page 结构指针。
+ * @brief 它处理了多种内核分配情景，包括页框分配策略、NUMA 节点优先级，
+ * @brief 以及内存不足时的回退策略。
+ *
+ * @param gfp 分配标志，用于指定分配行为
+ * @param order 指定要分配的连续物理页面数量，2^order个页面
+ * @param preferred_nid 首选的NUMA节点
+ * @param nodemask 指定可以分配页面的节点掩码
+ * @return struct page 所申请的page结构体指针
+ **/
 struct page *__alloc_pages(gfp_t gfp, unsigned int order, int preferred_nid,
 							nodemask_t *nodemask)
 {
 	struct page *page;
-	unsigned int alloc_flags = ALLOC_WMARK_LOW;
+	unsigned int alloc_flags = ALLOC_WMARK_LOW;/*页面分配的行为与属性，可分配低水位的内存*/
 	gfp_t alloc_gfp; /* The gfp_t that was actually used for allocation */
-	struct alloc_context ac = { };
+	struct alloc_context ac = { };//alloc_context是伙伴系统分配函数中用于保存相关的参数
 
-	/*
-	 * There are several places where we assume that the order value is sane
-	 * so bail out early if the request is out of bound.
-	 */
+	/* 1. 检查 order 是否超出 MAX_ORDER 的限制*/
 	if (WARN_ON_ONCE_GFP(order > MAX_ORDER, gfp))
 		return NULL;
+	 
+	gfp &= gfp_allowed_mask;//检差gfp是否合法
 
-	gfp &= gfp_allowed_mask;
-	/*
-	 * Apply scoped allocation constraints. This is mainly about GFP_NOFS
-	 * resp. GFP_NOIO which has to be inherited for all allocation requests
-	 * from a particular context which has been marked by
-	 * memalloc_no{fs,io}_{save,restore}. And PF_MEMALLOC_PIN which ensures
-	 * movable zones are not used during allocation.
-	 */
+    /*
+     * 2.根据当前的分配上下文（如是否禁止文件系统操作或 IO 操作）修改 GFP 标志。
+     *   例如，memalloc_no{fs,io}_{save,restore} 会设置 GFP_NOFS 或 GFP_NOIO。
+     */
 	gfp = current_gfp_context(gfp);
 	alloc_gfp = gfp;
+
+	/* 3.初始化页面分配器中用到的参数
+	 * 3.1 将初始化分配器中的相关信息,并放入alloc_context结构体中;
+	 * 3.2 根据 gfp 标志调整分配策略
+	*/
 	if (!prepare_alloc_pages(gfp, order, preferred_nid, nodemask, &ac,
 			&alloc_gfp, &alloc_flags))
 		return NULL;
 
-	/*
-	 * Forbid the first pass from falling back to types that fragment
-	 * memory until all local zones are considered.
-	 */
+	/* 4.初次尝试分配内存时,避免使用会导致碎片化的内存区域*/
 	alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp);
 
-	/* First allocation attempt */
+	/* 5.从伙伴系统的空闲链表中,快速分配物理页面*/
 	page = get_page_from_freelist(alloc_gfp, order, alloc_flags, &ac);
 	if (likely(page))
+		/*5.1分配成功*/
 		goto out;
 
+	/* 6.分配不成功,则调整gfp标志,并尝试慢速路径*/
 	alloc_gfp = gfp;
-	ac.spread_dirty_pages = false;
-
-	/*
-	 * Restore the original nodemask if it was potentially replaced with
-	 * &cpuset_current_mems_allowed to optimize the fast-path attempt.
-	 */
+	ac.spread_dirty_pages = false;//禁止慢速路径中传播脏页
 	ac.nodemask = nodemask;
-
+	/* 6.1 __alloc_pages_slowpath慢速路径分配物理页面,
+	 *     尝试使用更多的资源或策略进行页面分配
+	 */
 	page = __alloc_pages_slowpath(alloc_gfp, order, &ac);
 
 out:
+    /* 7. 如果分配成功,对页面进行 cgroup 相关的内存计费*/
 	if (memcg_kmem_online() && (gfp & __GFP_ACCOUNT) && page &&
 	    unlikely(__memcg_kmem_charge_page(page, gfp, order) != 0)) {
 		__free_pages(page, order);
@@ -4497,6 +4508,7 @@ out:
 	}
 
 	trace_mm_page_alloc(page, order, alloc_gfp, ac.migratetype);
+	/* 8.初始化页面的内存的状态*/
 	kmsan_alloc_page(page, order, alloc_gfp);
 
 	return page;
@@ -4516,23 +4528,27 @@ struct folio *__folio_alloc(gfp_t gfp, unsigned int order, int preferred_nid,
 EXPORT_SYMBOL(__folio_alloc);
 
 /*
- * Common helper functions. Never use with __GFP_HIGHMEM because the returned
- * address cannot represent highmem pages. Use alloc_pages and then kmap if
- * you need to access high mem.
+ * 用于分配指定数量的连续低地址内存页面，返回其内核虚拟地址
+ * 通过alloc_pages(gfp_mask & ~__GFP_HIGHMEM, order)实现；
+ * 禁止申请高端内存
  */
 unsigned long __get_free_pages(gfp_t gfp_mask, unsigned int order)
 {
 	struct page *page;
-
+	/*1.申请低端内存
+	 *  gfp_mask & ~__GFP_HIGHMEM：禁用高端内存
+	 */
 	page = alloc_pages(gfp_mask & ~__GFP_HIGHMEM, order);
 	if (!page)
 		return 0;
+	/*2.通过page_address获得page结构体的虚拟地址，返回page页的虚拟地址*/
 	return (unsigned long) page_address(page);
 }
 EXPORT_SYMBOL(__get_free_pages);
-
+/*分配一个全填充为0的物理页面*/
 unsigned long get_zeroed_page(gfp_t gfp_mask)
-{
+{	
+	/*1.调用__get_free_page申请*/
 	return __get_free_page(gfp_mask | __GFP_ZERO);
 }
 EXPORT_SYMBOL(get_zeroed_page);
@@ -4559,21 +4575,32 @@ EXPORT_SYMBOL(get_zeroed_page);
  */
 void __free_pages(struct page *page, unsigned int order)
 {
-	/* get PageHead before we drop reference */
+	/* 1.获取复合页的头，检查是否是pagehead页 */
 	int head = PageHead(page);
 
+	/* 2.获取页框引用次数
+	 *   减少一个页框的引用次数；
+	 *   检查引用次数是否归零，若归零则可以安全释放该页
+	 */
 	if (put_page_testzero(page))
+		/*释放页框*/
 		free_the_page(page, order);
 	else if (!head)
+	/*2.递归释放当前页和其余gao'jie'ye*/
 		while (order-- > 0)
 			free_the_page(page + (1 << order), order);
 }
 EXPORT_SYMBOL(__free_pages);
 
+/*释放指定虚拟地址 addr 处的一组连续的物理页框*/
 void free_pages(unsigned long addr, unsigned int order)
 {
 	if (addr != 0) {
+		/*1.使用宏 VM_BUG_ON 验证地址的合法性*/
 		VM_BUG_ON(!virt_addr_valid((void *)addr));
+		/*2.__free_pages释放具体的物理页面
+		 *  这里使用到了virt_to_page将虚拟地址转换为与之对应的 struct page
+		 */
 		__free_pages(virt_to_page((void *)addr), order);
 	}
 }

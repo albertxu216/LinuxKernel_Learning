@@ -573,11 +573,7 @@ static void __init map_mem(pgd_t *pgdp)
 	u64 i;
 
 	/*
-	 * Setting hierarchical PXNTable attributes on table entries covering
-	 * the linear region is only possible if it is guaranteed that no table
-	 * entries at any level are being shared between the linear region and
-	 * the vmalloc region. Check whether this is true for the PGD level, in
-	 * which case it is guaranteed to be true for all other levels as well.
+	 * 检查线性映射区域是否与 vmalloc 区域在页表的 PGD 级别上完全隔离
 	 */
 	BUILD_BUG_ON(pgd_index(direct_map_end - 1) == pgd_index(direct_map_end));
 
@@ -587,22 +583,19 @@ static void __init map_mem(pgd_t *pgdp)
 		flags |= NO_BLOCK_MAPPINGS | NO_CONT_MAPPINGS;
 
 	/*
-	 * Take care not to create a writable alias for the
-	 * read-only text and rodata sections of the kernel image.
-	 * So temporarily mark them as NOMAP to skip mappings in
-	 * the following for-loop
+	 * 1.将内核映像部分的物理内存标记为NO_MAPPING状态，来跳过下面的遍历映射阶段；
+	 *  避免在内存块遍历过程中将 内核代码段 误映射为 普通内存
 	 */
 	memblock_mark_nomap(kernel_start, kernel_end - kernel_start);
 
-	/* map all the memory banks */
+	/*
+	 *2.遍历所有物理内存块；
+	 *  每个物理内存块调用 __map_memblock 函数映射到线性映射区，并设置页表项；
+	 *  会跳过内核映像部分
+	 */
 	for_each_mem_range(i, &start, &end) {
 		if (start >= end)
 			break;
-		/*
-		 * The linear map must allow allocation tags reading/writing
-		 * if MTE is present. Otherwise, it has the same attributes as
-		 * PAGE_KERNEL.
-		 */
 		__map_memblock(pgdp, start, end, pgprot_tagged(PAGE_KERNEL),
 			       flags);
 	}
@@ -616,10 +609,14 @@ static void __init map_mem(pgd_t *pgdp)
 	 * but protects it from inadvertent modification or execution.
 	 * Note that contiguous mappings cannot be remapped in this way,
 	 * so we should avoid them here.
+	 *  3.将内核映像的物理内存重新映射为普通内存，
+	 *    并禁止使用连续映射，且标记为只读
 	 */
 	__map_memblock(pgdp, kernel_start, kernel_end,
 		       PAGE_KERNEL, NO_CONT_MAPPINGS);
 	memblock_clear_nomap(kernel_start, kernel_end - kernel_start);
+	
+	/*4. 将 KFENCE 机制的内存池映射到虚拟地址空间，供内核调试和错误检测使用*/
 	arm64_kfence_map_pool(early_kfence_pool, pgdp);
 }
 
@@ -717,40 +714,31 @@ static bool arm64_early_this_cpu_has_bti(void)
 
 /*
  * Create fine-grained mappings for the kernel.
+ * 创建内核映像，为内核的各个段（文本段、只读数据段、
+ * 初始化数据段等）创建精细的虚拟地址映射
  */
 static void __init map_kernel(pgd_t *pgdp)
 {
+	/*1.定义内核的文本段，只读数据段，初始化代码段，初始化数据段，普通数据段 对应的虚拟地址空间结构体*/
 	static struct vm_struct vmlinux_text, vmlinux_rodata, vmlinux_inittext,
 				vmlinux_initdata, vmlinux_data;
-
-	/*
-	 * External debuggers may need to write directly to the text
-	 * mapping to install SW breakpoints. Allow this (only) when
-	 * explicitly requested with rodata=off.
-	 */
 	pgprot_t text_prot = kernel_exec_prot();
 
-	/*
-	 * If we have a CPU that supports BTI and a kernel built for
-	 * BTI then mark the kernel executable text as guarded pages
-	 * now so we don't have to rewrite the page tables later.
-	 */
 	if (arm64_early_this_cpu_has_bti())
 		text_prot = __pgprot_modify(text_prot, PTE_GP, PTE_GP);
 
 	/*
-	 * Only rodata will be remapped with different permissions later on,
-	 * all other segments are allowed to use contiguous mappings.
+	 * 调用map_kernel_segment函数为内核的主要段创建映射；
 	 */
 	map_kernel_segment(pgdp, _stext, _etext, text_prot, &vmlinux_text, 0,
-			   VM_NO_GUARD);
+			   VM_NO_GUARD);//映射内核的文本段
 	map_kernel_segment(pgdp, __start_rodata, __inittext_begin, PAGE_KERNEL,
-			   &vmlinux_rodata, NO_CONT_MAPPINGS, VM_NO_GUARD);
+			   &vmlinux_rodata, NO_CONT_MAPPINGS, VM_NO_GUARD);//映射只读数据段
 	map_kernel_segment(pgdp, __inittext_begin, __inittext_end, text_prot,
-			   &vmlinux_inittext, 0, VM_NO_GUARD);
+			   &vmlinux_inittext, 0, VM_NO_GUARD);//映射内核的初始化代码段
 	map_kernel_segment(pgdp, __initdata_begin, __initdata_end, PAGE_KERNEL,
-			   &vmlinux_initdata, 0, VM_NO_GUARD);
-	map_kernel_segment(pgdp, _data, _end, PAGE_KERNEL, &vmlinux_data, 0, 0);
+			   &vmlinux_initdata, 0, VM_NO_GUARD);//映射初始化数据段
+	map_kernel_segment(pgdp, _data, _end, PAGE_KERNEL, &vmlinux_data, 0, 0);//映射内核的普通数据段
 
 	fixmap_copy(pgdp);
 	kasan_copy_shadow(pgdp);
@@ -785,19 +773,21 @@ static void __init create_idmap(void)
 				     early_pgtable_alloc, 0);
 	}
 }
-
+/*主要任务是设置初始内核页表并为虚拟内存映射做好准备*/
 void __init paging_init(void)
 {
+	/*1. 设置页目录表（PGD）映射*/
 	pgd_t *pgdp = pgd_set_fixmap(__pa_symbol(swapper_pg_dir));
 	extern pgd_t init_idmap_pg_dir[];
 
 	idmap_t0sz = 63UL - __fls(__pa_symbol(_end) | GENMASK(VA_BITS_MIN - 1, 0));
-
+	/*2.映射内核映像到内核虚拟地址*/
 	map_kernel(pgdp);
+	/*3.物理内存的线性映射*/
 	map_mem(pgdp);
-
+	/*4.清除通过 pgd_set_fixmap 设置的临时映射，释放固定的虚拟地址*/
 	pgd_clear_fixmap();
-
+	/*5.更新页表基地址寄存器（TTBR1）*/
 	cpu_replace_ttbr1(lm_alias(swapper_pg_dir), init_idmap_pg_dir);
 	init_mm.pgd = swapper_pg_dir;
 
