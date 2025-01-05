@@ -1593,10 +1593,13 @@ static void prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags
 		clear_page_pfmemalloc(page);
 }
 
-/*
- * Go through the free lists for the given migratetype and remove
- * the smallest available page from the freelists
- */
+/** 
+ * @brief 从特定迁移类型的空闲链表中分配最小可用页面块
+ * 
+ * @param zone 当前zone区域
+ * @param order 阶数
+ * @param migratetype 迁移类型
+ **/
 static __always_inline
 struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
 						int migratetype)
@@ -1605,24 +1608,38 @@ struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
 	struct free_area *area;
 	struct page *page;
 
-	/* Find a page of the appropriate size in the preferred list */
+	/*1. 遍历空闲链表，在最合适的链表中找到大小最合适的页块 
+	 *   从order开始，逐级向上找，直到MAX_ORDER
+	 *   会先找到当前阶数的空闲链表，再在改链表中找到对应迁移类型的页块；
+	 *   若在当前空闲链表中没找到，则在下一阶数的空闲链表中查找；
+	 *   若找到了，则执行分配操作；
+	 */
 	for (current_order = order; current_order <= MAX_ORDER; ++current_order) {
+		/*1.1 从伙伴系统中获取当前阶数的空闲链表*/
 		area = &(zone->free_area[current_order]);
+		/*1.2 从空闲链表中获取指定迁移类型的页块*/
 		page = get_page_from_free_area(area, migratetype);
 		if (!page)
 			continue;
+		/*1.3 将找到的页块从空闲链表中移除*/
 		del_page_from_free_list(page, zone, current_order);
+
+		/*1.4 拆分页块
+		 *    如果找到的页块大小current_order 大于 需要的页块大小order
+		 *    则需要递归将页块拆分成更小的块，
+		 *    将多余的页块拆分并返回到对应阶数的空闲链表中
+		 */
 		expand(zone, page, order, current_order, migratetype);
+		/*1.5 设置分配页块的迁移类型*/
 		set_pcppage_migratetype(page, migratetype);
+		/*tracepoint跟踪点*/
 		trace_mm_page_alloc_zone_locked(page, order, migratetype,
 				pcp_allowed_order(order) &&
 				migratetype < MIGRATE_PCPTYPES);
 		return page;
 	}
-
 	return NULL;
 }
-
 
 /*
  * This array describes the order lists are fallen back to when
@@ -2126,26 +2143,34 @@ __rmqueue(struct zone *zone, unsigned int order, int migratetype,
 {
 	struct page *page;
 
+	/*1.从CMA区域分配, 平衡CMA区域与普通区域内存分配
+	 *  由于CMA区域与普通区域共享zone的内存,故需要平衡二者;
+	 *  当CMA区域的空闲页数占zone中空闲页的一半以上,则优先从cma区域分配内存;
+	*/
 	if (IS_ENABLED(CONFIG_CMA)) {
 		/*
 		 * Balance movable allocations between regular and CMA areas by
 		 * allocating from CMA when over half of the zone's free memory
 		 * is in the CMA area.
 		 */
-		if (alloc_flags & ALLOC_CMA &&
-		    zone_page_state(zone, NR_FREE_CMA_PAGES) >
-		    zone_page_state(zone, NR_FREE_PAGES) / 2) {
+		if (alloc_flags & ALLOC_CMA &&						//支持CMA区域分配
+		    zone_page_state(zone, NR_FREE_CMA_PAGES) >		//判断cma区域空闲页面是否大于zone空闲页面的一半
+		    zone_page_state(zone, NR_FREE_PAGES) / 2) 
+		{
 			page = __rmqueue_cma_fallback(zone, order);
 			if (page)
 				return page;
 		}
 	}
 retry:
+	/*2. 普通路径分配物理页面*/
 	page = __rmqueue_smallest(zone, order, migratetype);
+	/*3. 普通路径分配失败,则回退,尝试从cma或其他迁移类型区域分配页面*/
 	if (unlikely(!page)) {
+		/*3.1 尝试从cma区域分配页面*/
 		if (alloc_flags & ALLOC_CMA)
 			page = __rmqueue_cma_fallback(zone, order);
-
+		/*3.2 尝试从其他迁移类型分配物理页面*/
 		if (!page && __rmqueue_fallback(zone, order, migratetype,
 								alloc_flags))
 			goto retry;
@@ -2670,7 +2695,16 @@ static inline void zone_statistics(struct zone *preferred_zone, struct zone *z,
 #endif
 }
 
-/*从伙伴系统中申请物理页面*/
+/** 
+ * @brief 当无法从pcp链表中获取到页面时，尝试从伙伴系统中申请物理页面 
+ * 
+ * @param preferred_zone 优先选择的 zone，通常是 NUMA 系统中本地节点的
+ * @param zone 当前zone区域
+ * @param order 阶数
+ * @param alloc_flags 分配标志
+ * @param migratetype 迁移类型
+ * 
+ **/
 static __always_inline
 struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
 			   unsigned int order, unsigned int alloc_flags,
@@ -2678,9 +2712,10 @@ struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
 {
 	struct page *page;
 	unsigned long flags;
-	/*1.do while 循环 去循环分配物理内存*/
+	/*1.do while 循环 去分配页块*/
 	do {
 		page = NULL;
+		/*1.1 关中断自旋锁，用于保护zone的全局伙伴系统*/
 		spin_lock_irqsave(&zone->lock, flags);
 		/*
 		 * order-0 request can reach here when the pcplist is skipped
@@ -2688,12 +2723,17 @@ struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
 		 * reserved for high-order atomic allocation, so order-0
 		 * request should skip it.
 		 */
-		/*1.1 允许从HIGHATOMIC 区域申请内存，则直接调用__rmqueue_smallest申请
+
+		/*1.2 优先尝试高原子分配，保证高优先级任务优先申请HIGHATOMIC区域
+		 *    允许从HIGHATOMIC 区域申请内存，则直接调用__rmqueue_smallest申请
 		 *    HIGHATOMIC是伙伴系统中的一种迁移类型，只有高优先级、高阶分配需求可用；
-		*/
+		 */
 		if (alloc_flags & ALLOC_HIGHATOMIC)
 			page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
-		/*1.2 调用__rmqueue()从指定迁移类型migratetype的区域分配物理页面*/
+
+		/*1.3 正常分配路径
+		 *    调用__rmqueue()从指定迁移类型migratetype的区域分配物理页面
+		 */
 		if (!page) {
 			page = __rmqueue(zone, order, migratetype, alloc_flags);
 
@@ -2703,22 +2743,26 @@ struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
 			 * failing a high-order atomic allocation in the
 			 * future.
 			 */
-			/*1.2.1 分配失败，则是在OOM(内存不足)的情况下进行分配的，
-			 *      尝试在MIGRATE_HIGHATOMIC 区域再次分配内存
+			/*1.3.1 普通分配路径失败，
+			 *      如果在OOM上下文情况下，则允许普通任务使用MIGRATE_HIGHATOMIC区域内存
+			 *      尝试在MIGRATE_HIGHATOMIC 区域再次分配
 			 */
 			if (!page && (alloc_flags & ALLOC_OOM))
 				page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
-			/*1.2.3 还是分配失败，则解锁，返回NULL*/
+			/*1.2.3 还是分配失败，则释放锁，返回NULL*/
 			if (!page) {
 				spin_unlock_irqrestore(&zone->lock, flags);
 				return NULL;
 			}
 		}
+		/*1.4 zone中信息更新*/
 		__mod_zone_freepage_state(zone, -(1 << order),
 					  get_pcppage_migratetype(page));
+		/*1.5 释放锁*/
 		spin_unlock_irqrestore(&zone->lock, flags);
-	} while (check_new_pages(page, order));
-
+	} while (check_new_pages(page, order));//验证分配的页面块是否有效（如未被污染或未正确初始化
+	
+	/*2. 更新统计信息*/
 	__count_zid_vm_events(PGALLOC, page_zonenum(page), 1 << order);
 	zone_statistics(preferred_zone, zone, 1);
 

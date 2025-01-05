@@ -808,7 +808,7 @@ enum zone_type {
 
 #define ASYNC_AND_SYNC 2
 
-struct zone {
+struct zone {m
 	/* Read-mostly fields */struct pglist_data
 
 	/* zone watermarks, access with *_wmark_pages(zone) macros */
