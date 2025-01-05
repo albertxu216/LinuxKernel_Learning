@@ -566,12 +566,14 @@ static inline int pindex_to_order(unsigned int pindex)
 
 	return order;
 }
-
+/*判断申请order个物理页面是否可以从pcp链表中申请*/
 static inline bool pcp_allowed_order(unsigned int order)
 {
+	/*1.PAGE_ALLOC_COSTLY_ORDER:最大普通页面分配大小,一般为3*/
 	if (order <= PAGE_ALLOC_COSTLY_ORDER)
 		return true;
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
+#ifdef CONFIG_TRANSPARENT_HUGEPAGE//内核启用了透明大页
+	/*2.pageblock_orde表示每个页面块的大小,通常为9,即512个页面*/
 	if (order == pageblock_order)
 		return true;
 #endif
@@ -2668,6 +2670,7 @@ static inline void zone_statistics(struct zone *preferred_zone, struct zone *z,
 #endif
 }
 
+/*从伙伴系统中申请物理页面*/
 static __always_inline
 struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
 			   unsigned int order, unsigned int alloc_flags,
@@ -2675,7 +2678,7 @@ struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
 {
 	struct page *page;
 	unsigned long flags;
-
+	/*1.do while 循环 去循环分配物理内存*/
 	do {
 		page = NULL;
 		spin_lock_irqsave(&zone->lock, flags);
@@ -2685,8 +2688,12 @@ struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
 		 * reserved for high-order atomic allocation, so order-0
 		 * request should skip it.
 		 */
+		/*1.1 允许从HIGHATOMIC 区域申请内存，则直接调用__rmqueue_smallest申请
+		 *    HIGHATOMIC是伙伴系统中的一种迁移类型，只有高优先级、高阶分配需求可用；
+		*/
 		if (alloc_flags & ALLOC_HIGHATOMIC)
 			page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
+		/*1.2 调用__rmqueue()从指定迁移类型migratetype的区域分配物理页面*/
 		if (!page) {
 			page = __rmqueue(zone, order, migratetype, alloc_flags);
 
@@ -2696,9 +2703,12 @@ struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
 			 * failing a high-order atomic allocation in the
 			 * future.
 			 */
+			/*1.2.1 分配失败，则是在OOM(内存不足)的情况下进行分配的，
+			 *      尝试在MIGRATE_HIGHATOMIC 区域再次分配内存
+			 */
 			if (!page && (alloc_flags & ALLOC_OOM))
 				page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
-
+			/*1.2.3 还是分配失败，则解锁，返回NULL*/
 			if (!page) {
 				spin_unlock_irqrestore(&zone->lock, flags);
 				return NULL;
@@ -2715,7 +2725,16 @@ struct page *rmqueue_buddy(struct zone *preferred_zone, struct zone *zone,
 	return page;
 }
 
-/* Remove page from the per-cpu list, caller must protect the list */
+/**  
+ * @brief 用于从 PCP链表 中移除页面块，并在链表为空时，批量从伙伴系统补充页面到 PCP链表
+ * 
+ * @param zone 当前zone空间
+ * @param order 要分配多少物理页面
+ * @param migratetype 迁移类型
+ * @param alloc_flags 分配标志
+ * @param pcp cpu 对应的pcp链表
+ * @param list 当前迁移类型和阶数对应的 链表
+ **/
 static inline
 struct page *__rmqueue_pcplist(struct zone *zone, unsigned int order,
 			int migratetype,
@@ -2726,8 +2745,11 @@ struct page *__rmqueue_pcplist(struct zone *zone, unsigned int order,
 	struct page *page;
 
 	do {
+		/*1. 检查pcp中对应迁移类型和阶数的链表是否为空
+		 *   若为空，则调用 rmqueue_bulk 从伙伴系统中补充相应的页面；
+		 */
 		if (list_empty(list)) {
-			int batch = READ_ONCE(pcp->batch);
+			int batch = READ_ONCE(pcp->batch);//批量补充的页块数量
 			int alloced;
 
 			/*
@@ -2739,6 +2761,7 @@ struct page *__rmqueue_pcplist(struct zone *zone, unsigned int order,
 			 */
 			if (batch > 1)
 				batch = max(batch >> order, 2);
+			/*批量从伙伴系统分配页面块，并加入 PCP链表*/
 			alloced = rmqueue_bulk(zone, order,
 					batch, list,
 					migratetype, alloc_flags);
@@ -2747,11 +2770,12 @@ struct page *__rmqueue_pcplist(struct zone *zone, unsigned int order,
 			if (unlikely(list_empty(list)))
 				return NULL;
 		}
-
+		/*2.获取list链表中第一个页块，并分配*/
 		page = list_first_entry(list, struct page, pcp_list);
+		/*3.从list中删掉分配出去的页块*/
 		list_del(&page->pcp_list);
 		pcp->count -= 1 << order;
-	} while (check_new_pages(page, order));
+	} while (check_new_pages(page, order));//check_new_pages确保内存块经过校验，避免返回未正确初始化的页面
 
 	return page;
 }
@@ -2767,6 +2791,7 @@ static struct page *rmqueue_pcplist(struct zone *preferred_zone,
 	unsigned long __maybe_unused UP_flags;
 
 	/* spin_trylock may fail due to a parallel drain or IRQ reentrancy. */
+	/*0. 给pcp链表上锁*/
 	pcp_trylock_prepare(UP_flags);
 	pcp = pcp_spin_trylock(zone->per_cpu_pageset);
 	if (!pcp) {
@@ -2781,6 +2806,7 @@ static struct page *rmqueue_pcplist(struct zone *preferred_zone,
 	 */
 	pcp->free_factor >>= 1;
 	list = &pcp->lists[order_to_pindex(migratetype, order)];
+	/*2.__rmqueue_pcplist从pcp链表分配物理页面 */
 	page = __rmqueue_pcplist(zone, order, migratetype, alloc_flags, pcp, list);
 	pcp_spin_unlock(pcp);
 	pcp_trylock_finish(UP_flags);
@@ -2811,12 +2837,14 @@ struct page *rmqueue(struct zone *preferred_zone,
 {
 	struct page *page;
 
-	/*
-	 * We most definitely don't want callers attempting to
-	 * allocate greater than order-1 page units with __GFP_NOFAIL.
+	/*0.条件验证
 	 */
 	WARN_ON_ONCE((gfp_flags & __GFP_NOFAIL) && (order > 1));
 
+	/*1.pcp链表中快速分配
+	 *  pcp_allowed_order()判断是否可以从pcp链表中快速分配固定的物理页面
+	 *  可以的话,调用rmqueue_pcplist()函数从pcp链表中快速申请物理页面
+	 */
 	if (likely(pcp_allowed_order(order))) {
 		/*
 		 * MIGRATE_MOVABLE pcplist could have the pages on CMA area and
@@ -2824,6 +2852,7 @@ struct page *rmqueue(struct zone *preferred_zone,
 		 */
 		if (!IS_ENABLED(CONFIG_CMA) || alloc_flags & ALLOC_CMA ||
 				migratetype != MIGRATE_MOVABLE) {
+			/*rmqueue_pcplist()从pcp页面缓存链表中分配物理页面*/
 			page = rmqueue_pcplist(preferred_zone, zone, order,
 					migratetype, alloc_flags);
 			if (likely(page))
@@ -2831,14 +2860,19 @@ struct page *rmqueue(struct zone *preferred_zone,
 		}
 	}
 
+	/*2.调用rmqueue_buddy()从伙伴系统中分配物理页面*/
 	page = rmqueue_buddy(preferred_zone, zone, order, alloc_flags,
 							migratetype);
 
 out:
-	/* Separate test+clear to avoid unnecessary atomics */
+	/*3.触发kswapd守护进程，进行内存回收工作
+	 *  test_bit(ZONE_BOOSTED_WATERMARK, &zone->flags) 检查是否触发了水位提升
+	 *  如果触发了,则表示需要内存回收;
+	 */
 	if ((alloc_flags & ALLOC_KSWAPD) &&
 	    unlikely(test_bit(ZONE_BOOSTED_WATERMARK, &zone->flags))) {
 		clear_bit(ZONE_BOOSTED_WATERMARK, &zone->flags);
+		/*唤醒守护进程,进行内存回收工作*/
 		wakeup_kswapd(zone, 0, 0, zone_idx(zone));
 	}
 
@@ -2968,41 +3002,48 @@ bool zone_watermark_ok(struct zone *z, unsigned int order, unsigned long mark,
 					zone_page_state(z, NR_FREE_PAGES));
 }
 
+/**
+ * @brief 用于测试当前zone的水位情况，快速检查是否满足order的页面分配请求
+ * @param z 所检测的目标zone
+ * @param order 分配物理页面个数
+ * @param mark 要测试的水位标准
+ * @param highest_zoneidx 最高
+ * @param alloc_flags 分配器内部使用的标志位属性
+**/
 static inline bool zone_watermark_fast(struct zone *z, unsigned int order,
 				unsigned long mark, int highest_zoneidx,
 				unsigned int alloc_flags, gfp_t gfp_mask)
 {
 	long free_pages;
-
+	/*1.获取zone中空闲页面的数量
+	 *  zone_page_state通过zone结构体中的vm_stat[]进行统计；
+	 *  vm_stat[]记录着物理页面统计数据；
+	 */
 	free_pages = zone_page_state(z, NR_FREE_PAGES);
 
-	/*
-	 * Fast check for order-0 only. If this fails then the reserves
-	 * need to be calculated.
-	 */
+	/*2.针对仅分配1个页面的情况*/
 	if (!order) {
 		long usable_free;
 		long reserved;
 
 		usable_free = free_pages;
+		/*2.1 计算由于分配标志（如高原子分配）导致无法使用的页面数量*/
 		reserved = __zone_watermark_unusable_free(z, 0, alloc_flags);
 
 		/* reserved may over estimate high-atomic reserves. */
+		/*2.2 从总空闲页面中减去保留页面数，得到实际可用页面数*/
 		usable_free -= min(usable_free, reserved);
-		if (usable_free > mark + z->lowmem_reserve[highest_zoneidx])
+		if (usable_free > mark + z->lowmem_reserve[highest_zoneidx])//lowmem_reserve是zone预留的水位
 			return true;
 	}
-
+	/*3.真正的水位线检查*/
 	if (__zone_watermark_ok(z, order, mark, highest_zoneidx, alloc_flags,
 					free_pages))
 		return true;
 
-	/*
-	 * Ignore watermark boosting for __GFP_HIGH order-0 allocations
-	 * when checking the min watermark. The min watermark is the
-	 * point where boosting is ignored so that kswapd is woken up
-	 * when below the low watermark.
-	 */
+	 /*4.如果只分配一页,并且允许提升水位线,当前检查的水位标志为WMARK_MIN最小水位
+	  *  尝试水位标记为最小水位,并且重新调用__zone_watermark_ok检查水位线条件;
+	  */
 	if (unlikely(!order && (alloc_flags & ALLOC_MIN_RESERVE) && z->watermark_boost
 		&& ((alloc_flags & ALLOC_WMARK_MASK) == WMARK_MIN))) {
 		mark = z->_watermark[WMARK_MIN];
@@ -3103,40 +3144,43 @@ get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
 	bool no_fallback;//是否避免碎片化的标志
 
 retry:
-	/*
-	 * 在 zonelist 中扫描，寻找有足够内存可分配的 zone。
-	 * 可能受 cpuset 和其他限制影响。
-	 */
+
 	no_fallback = alloc_flags & ALLOC_NOFRAGMENT;//表示是否需要避免内存碎片化；
 	z = ac->preferred_zoneref;//获取zonelist中首选和推荐的zone；
 
-	/*1.使用for_next_zone_zonelist_nodemask宏，
-	 *  从推荐的zone开始遍历当前节点中highest_zoneidx以上的zone*/
+/*1.使用for_next_zone_zonelist_nodemask宏遍历zonelist链表，
+ *  从推荐的zone开始遍历当前节点中highest_zoneidx以上的zone
+ */
 	for_next_zone_zonelist_nodemask(zone, z, ac->highest_zoneidx,
 					ac->nodemask) {
 		struct page *page;
 		unsigned long mark;
-
-		/*1.1 检查cpuset限制
-		 *    如果开启了cpuset限制，应检查当前zone是否允许分配；
-		 *    如果zone不再允许的cpu集合中，则跳过该zone；
+	/*1.1 约束条件的检查
+	 *    a. cpu集合限制;
+	 *    b. 脏页限制;
+	 *    c. 碎片化控制;
+	 *    d. 水位检测;
+	 */
+		/*1.1.1 cpu集合限制
+		 *      如果开启了cpuset限制，应检查当前zone是否允许分配；
+		 *      如果zone不在允许的cpu集合中，则跳过该zone；
 		 */
 		if (cpusets_enabled() &&
 			(alloc_flags & ALLOC_CPUSET) &&
 			!__cpuset_zone_allowed(zone, gfp_mask))
 				continue;
-		/*
-		 * 在为写操作分配页面缓存时，内核会优先选择脏页未超出限制的节点，
-		 * 以避免单个节点负担过多脏页，从而影响全局内存平衡和性能。
-		 * 在慢速路径中（spread_dirty_pages 未设置时），
-		 * 允许暂时超出节点的脏页限制，以提高分配成功率，
-		 * 特别是在 NUMA 系统中节点内存较小时。
-		 * 这种实现是权宜之计，未来需要通过节点感知的脏页限制和优化刷新线程机制进一步完善。
+				
+		/*1.1.2 脏页负载限制
+		 * a.当分配页面用于写入时，需要确保脏页不会超过节点的限制;
+		 * b.检查当前 zone 所属的节点是否可以分配脏页。如果不允许，跳过该 zone。
+		 *
+		 *   在为写操作分配页面缓存时，内核会优先选择脏页未超出限制的节点，
+		 *   以避免单个节点负担过多脏页，从而影响全局内存平衡和性能。
+		 *   在慢速路径中（spread_dirty_pages 未设置时），
+		 *   允许暂时超出节点的脏页限制，以提高分配成功率，
+		 *   特别是在 NUMA 系统中节点内存较小时。
+		 *   这种实现是权宜之计，未来需要通过节点感知的脏页限制和优化刷新线程机制进一步完善。
 		 */
-		 /*1.2 脏页限制
-		  * a.当分配页面用于写入时，需要确保脏页不会超过节点的限制;
-		  * b.检查当前 zone 所属的节点是否可以分配脏页。如果不允许，跳过该 zone。
-		  */
 		if (ac->spread_dirty_pages) {
 			if (last_pgdat != zone->zone_pgdat) {//检查节点是否发生变化；
 				last_pgdat = zone->zone_pgdat;
@@ -3146,16 +3190,15 @@ retry:
 			if (!last_pgdat_dirty_ok)//当前节点不允许分配脏页，跳过
 				continue;
 		}
-		/*1.3 */
+		/*1.1.3 碎片化控制
+		 * 		如果当前节点是远端节点，则尝试将避免碎片化标志改为允许碎片化
+		 *      这是为了在NUMA系统中，尽量从本地节点分配内存，减少远端内存的访问
+		 *      分配本地内存就算造成碎片化,也好过,分配远端内存;
+		 */
 		if (no_fallback && nr_online_nodes > 1 &&
 		    zone != ac->preferred_zoneref->zone) {
 			int local_nid;
 
-			/*
-			 * If moving to a remote node, retry but allow
-			 * fragmenting fallbacks. Locality is more important
-			 * than fragmentation avoidance.
-			 */
 			local_nid = zone_to_nid(ac->preferred_zoneref->zone);
 			if (zone_to_nid(zone) != local_nid) {
 				alloc_flags &= ~ALLOC_NOFRAGMENT;
@@ -3163,46 +3206,87 @@ retry:
 			}
 		}
 
+		/*1.1.4 内存水位条件检测:
+		 *      当前zone是否满足内存分配的水位条件
+		 *      ALLOW_WMARK_LOW：最低分配水位；
+		 *      ALLOW_WMARK_HIGH：更高的分配水位；
+		 *      ALLOW_WMARK_MIN：绝对最低水位，低于此值需要回收；
+		 *
+		 *      不满足水位条件:
+		 *      则触发1.2 回退与扩展机制,
+		 */
+		/*1.1.4.1 wmark_pages计算水位值*/
 		mark = wmark_pages(zone, alloc_flags & ALLOC_WMARK_MASK);
+		/*1.1.4.2 zone_watermark_fast()检查当前zone的水位情况，是否低于低水位线WMARK_LOW
+		 *        是否有足够的空闲物理页面
+		 *        检查是否有满足order的空闲内存块
+		 *        如果水位不足即没有足够的物理页面，则触发1.2 回退与扩展机制
+		 */
 		if (!zone_watermark_fast(zone, order, mark,
 				       ac->highest_zoneidx, alloc_flags,
 				       gfp_mask)) {
 			int ret;
-
+	/*1.2 回退与扩展机制
+	 *    不满足水位条件,触发
+	 *    1.2.1.退回去查看 是否有 系统未初始化未识别的内存块，将其加入zone中,直接去分配;
+	 *    1.2.2.退回去查看 是否有 延迟页面初始化的内存块; 
+	 *    1.2.3.若可以忽略水位限制,则直接进行物理内存分配;  
+	 *    1.2.4.内存回收,若允许内存回收,则尝试回收内存;
+	 */
+			/*1.2.1 检查是否存在未初始化、未被系统识别的内存块*/
 			if (has_unaccepted_memory()) {
+				/*初始化并将这部分内存块加入zone中
+				 *跳到try_this_zone中 真正分配物理内存；
+				 */
 				if (try_to_accept_memory(zone, order))
 					goto try_this_zone;
 			}
 
-#ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT
-			/*
-			 * Watermark failed for this zone, but see if we can
-			 * grow this zone if it contains deferred pages.
+#ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT//内核启用了延迟页面初始化功能
+			/*1.2.2 检查是否存在延迟初始化页面
+			 *      若内核启动了延迟初始化功能,
+			 *      则初始化这部分内存,并将其扩展到当前zone的内存池
+			 *
+			 *======延迟初始化是为了加速系统启动时的内存初始化过程，
+			 *		将部分页面的初始化推迟到了实际需要时执行，
+			 *		那么现在zone中的物理内存不够了，便可以尝试初始化这部分的内存；
 			 */
 			if (deferred_pages_enabled()) {
+			/*尝试初始化 之前延迟初始化的页面，扩展当前zone的内存池，
+			 *初始化成功后，直接去try_this_zone分配物理内存；
+			 */
 				if (_deferred_grow_zone(zone, order))
 					goto try_this_zone;
 			}
 #endif
-			/* Checked here to keep the fast path fast */
+			/*1.2.3 忽略水位限制:
+			 *      如果启用了ALLOC_NO_WATERMARKS标志，表示可以忽略所有水位线限制
+			 *      直接去try_this_zone 分配物理内存
+			 */
 			BUILD_BUG_ON(ALLOC_NO_WATERMARKS < NR_WMARK);
 			if (alloc_flags & ALLOC_NO_WATERMARKS)
 				goto try_this_zone;
-
-			if (!node_reclaim_enabled() ||
+			
+			/*1.2.4 内存回收:
+			 *      a.node_reclaim_enabled 节点允许回收内存，
+			 *        且zone_allows_reclaim zone允许回收内存,
+			 *      b.则通过node_reclaim进行内存回收
+			 *      c.zone_watermark_ok()去检查回收后的zone是否满足分配需求
+			 */
+			if (!node_reclaim_enabled() || 
 			    !zone_allows_reclaim(ac->preferred_zoneref->zone, zone))
-				continue;
-
-			ret = node_reclaim(zone->zone_pgdat, gfp_mask, order);
+				continue;//不允许的话，跳去下一个zone；
+			
+			ret = node_reclaim(zone->zone_pgdat, gfp_mask, order);//执行当前节点的内存回收
 			switch (ret) {
-			case NODE_RECLAIM_NOSCAN:
+			case NODE_RECLAIM_NOSCAN://未执行内存回收操作，跳过当前zone
 				/* did not scan */
 				continue;
-			case NODE_RECLAIM_FULL:
+			case NODE_RECLAIM_FULL://节点资源耗尽，跳过当前zone
 				/* scanned but unreclaimable */
 				continue;
-			default:
-				/* did we reclaim enough */
+			default://回收了一些页面，释放了一些内存
+				/*调用zone_watermark_ok()去检查回收后的zone是否满足分配需求*/
 				if (zone_watermark_ok(zone, order, mark,
 					ac->highest_zoneidx, alloc_flags))
 					goto try_this_zone;
@@ -3212,27 +3296,33 @@ retry:
 		}
 
 try_this_zone:
+/*1.3 rmqueue()尝试从伙伴系统空闲链表中分配物理页面
+ *    1.3.1 分配成功,则执行一系列初始化工作;
+ *    1.3.2 分配失败,则再次触发回退与扩展机制,查看是否有未初始化的内存;
+ */
+		/*尝试调用rmpueue() 从zone空闲链表 (伙伴系统空闲链表) 中分配物理页面*/
 		page = rmqueue(ac->preferred_zoneref->zone, zone, order,
 				gfp_mask, alloc_flags, ac->migratetype);
 		if (page) {
+			/*分配成功的话，则对分配好的物理页面进行初始化*/
 			prep_new_page(page, order, gfp_mask, alloc_flags);
 
 			/*
-			 * If this is a high-order atomic allocation then check
-			 * if the pageblock should be reserved for the future
+			 * 如果是高阶原子分配，检查页面块是否需要保留。
 			 */
 			if (unlikely(alloc_flags & ALLOC_HIGHATOMIC))
 				reserve_highatomic_pageblock(page, zone, order);
 
 			return page;
 		} else {
+			/*未分配成功，则再次检查是否有未初始化的内存块，将其初始化，并重新尝试分配内存*/
 			if (has_unaccepted_memory()) {
 				if (try_to_accept_memory(zone, order))
 					goto try_this_zone;
 			}
 
 #ifdef CONFIG_DEFERRED_STRUCT_PAGE_INIT
-			/* Try again if zone has deferred pages */
+			/*再次检查是否有延迟初始化内存，如果有则尝试初始化这部分内存，并再次重新分配*/
 			if (deferred_pages_enabled()) {
 				if (_deferred_grow_zone(zone, order))
 					goto try_this_zone;
@@ -3245,7 +3335,11 @@ try_this_zone:
 	 * It's possible on a UMA machine to get through all zones that are
 	 * fragmented. If avoiding fragmentation, reset and try again.
 	 */
+/*2. 分配失败
+ *   将允许碎片化,从头遍历zonelist重新分配物理内存
+ */
 	if (no_fallback) {
+		/*禁止避免碎片化标志，重头尝试分配*/
 		alloc_flags &= ~ALLOC_NOFRAGMENT;
 		goto retry;
 	}
