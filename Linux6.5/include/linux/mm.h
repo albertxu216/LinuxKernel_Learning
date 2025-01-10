@@ -1019,9 +1019,7 @@ static inline unsigned int folio_order(struct folio *folio)
  * routine so they can be sure the page doesn't go away from under them.
  */
 
-/*
- * Drop a ref, return true if the refcount fell to zero (the page has no users)
- */
+/*减少页面的引用计数，并检查引用计数是否归零（即页面是否没有任何用户占用)*/
 static inline int put_page_testzero(struct page *page)
 {
 	VM_BUG_ON_PAGE(page_ref_count(page) == 0, page);

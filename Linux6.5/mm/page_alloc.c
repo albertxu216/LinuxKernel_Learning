@@ -579,12 +579,16 @@ static inline bool pcp_allowed_order(unsigned int order)
 #endif
 	return false;
 }
-
+/*根据页面大小和page首地址,释放物理页面*/
 static inline void free_the_page(struct page *page, unsigned int order)
 {
+	/*1.大小是否满足pcp链表
+	 *  若满足pcp要求,调用 free_unref_page 尝试将页面释放进pcp链表中作为页面缓存;
+	 */
 	if (pcp_allowed_order(order))		/* Via pcp? */
 		free_unref_page(page, order);
 	else
+	/*2. 不满足pcp链表要求,尝试将空闲页块放入伙伴系统*/
 		__free_pages_ok(page, order, FPI_NONE);
 }
 
@@ -1298,7 +1302,7 @@ static void __free_pages_ok(struct page *page, unsigned int order,
 	int migratetype;
 	unsigned long pfn = page_to_pfn(page);
 	struct zone *zone = page_zone(page);
-
+	/*1. 页面释放前的准备*/
 	if (!free_pages_prepare(page, order, fpi_flags))
 		return;
 
@@ -1307,14 +1311,25 @@ static void __free_pages_ok(struct page *page, unsigned int order,
 	 * is used to avoid calling get_pfnblock_migratetype() under the lock.
 	 * This will reduce the lock holding time.
 	 */
+	/*2. 获得页面迁移类型*/
 	migratetype = get_pfnblock_migratetype(page, pfn);
 
+	/*3. 开始页面释放:
+	 *3.1 给当前zone区域的伙伴系统上锁;
+	 *3.2 隔离页块判断;
+	 *3.3 __free_one_page释放页块;
+	 *3.4 释放锁;
+	 */
+	/*3.1 给当前zone区域的伙伴系统上锁*/
 	spin_lock_irqsave(&zone->lock, flags);
+	/*3.2 如果有隔离页块,需要再次确定页面迁移类型*/
 	if (unlikely(has_isolate_pageblock(zone) ||
 		is_migrate_isolate(migratetype))) {
 		migratetype = get_pfnblock_migratetype(page, pfn);
 	}
+	/*3.3 释放页块*/
 	__free_one_page(page, pfn, zone, order, migratetype, fpi_flags);
+	/*3.4 释放锁*/
 	spin_unlock_irqrestore(&zone->lock, flags);
 
 	__count_vm_events(PGFREE, 1 << order);
@@ -2457,7 +2472,8 @@ static void free_unref_page_commit(struct zone *zone, struct per_cpu_pages *pcp,
 }
 
 /*
- * Free a pcp page
+ * 负责将页面块优先释放到 Per-CPU Pages（PCP）链表 中以提高性能
+ * 如果 PCP 不可用，则直接释放到伙伴系统中
  */
 void free_unref_page(struct page *page, unsigned int order)
 {
@@ -2466,7 +2482,7 @@ void free_unref_page(struct page *page, unsigned int order)
 	struct zone *zone;
 	unsigned long pfn = page_to_pfn(page);
 	int migratetype;
-
+	/*1. 检查页块是否可安全释放*/
 	if (!free_unref_page_prepare(page, pfn, order))
 		return;
 
@@ -2477,22 +2493,37 @@ void free_unref_page(struct page *page, unsigned int order)
 	 * areas back if necessary. Otherwise, we may have to free
 	 * excessively into the page allocator
 	 */
+	/*2. 确定页面迁移类型*/
 	migratetype = get_pcppage_migratetype(page);
+	/*3. 如果迁移类型超出pcp支持范围,则考虑隔离页面的情况*/
 	if (unlikely(migratetype >= MIGRATE_PCPTYPES)) {
+		/*3.1 如果该页面是隔离页面,则不能放入pcp链表,需放入伙伴系统
+		 *    这是因为,隔离页面 需要避免频繁的迁移操作,
+		 *    而pcp链表的高效性就依赖于频繁分配和释放的页面
+		 */
 		if (unlikely(is_migrate_isolate(migratetype))) {
 			free_one_page(page_zone(page), page, pfn, order, migratetype, FPI_NONE);
 			return;
 		}
+		/*3.2 将迁移类型改为 MIGRATE_MOVABLE 
+		 *    不是隔离页面,则修改迁移类型,尝试放入pcp链表
+		 */
 		migratetype = MIGRATE_MOVABLE;
 	}
 
 	zone = page_zone(page);
+	/*4. 释放到pcp链表
+	 *   如果成功锁定pcp链表,则直接释放到pcp链表;
+	 *   如果未锁定,则释放到伙伴系统;
+	 */
 	pcp_trylock_prepare(UP_flags);
 	pcp = pcp_spin_trylock(zone->per_cpu_pageset);
 	if (pcp) {
+		/*4.1 释放到pcp链表*/
 		free_unref_page_commit(zone, pcp, page, migratetype, order);
 		pcp_spin_unlock(pcp);
 	} else {
+		/*4.2 释放到伙伴系统*/
 		free_one_page(zone, page, pfn, order, migratetype, FPI_NONE);
 	}
 	pcp_trylock_finish(UP_flags);
@@ -4716,15 +4747,16 @@ void __free_pages(struct page *page, unsigned int order)
 	/* 1.获取复合页的头，检查是否是pagehead页 */
 	int head = PageHead(page);
 
-	/* 2.获取页框引用次数
-	 *   减少一个页框的引用次数；
-	 *   检查引用次数是否归零，若归零则可以安全释放该页
+	/* 2. 获取页框引用次数
+	 *    减少一个页框的引用次数；
+	 * 2.1检查引用次数是否归零，若归零则可以安全释放该页块;
+	 * 2.2否则尝试递归逐级释放页块;
 	 */
 	if (put_page_testzero(page))
 		/*释放页框*/
 		free_the_page(page, order);
 	else if (!head)
-	/*2.递归释放当前页和其余gao'jie'ye*/
+	/*3.递归释放当前页和其余高阶页*/
 		while (order-- > 0)
 			free_the_page(page + (1 << order), order);
 }

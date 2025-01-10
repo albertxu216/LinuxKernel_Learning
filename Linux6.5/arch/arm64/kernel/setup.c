@@ -304,10 +304,10 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	 * everything later.
 	 */
 	arm64_use_ng_mappings = kaslr_requires_kpti();
-
-	early_fixmap_init();
-	early_ioremap_init();
-
+	/*1. 初始化fixmap 和 ioremap空间*/
+	early_fixmap_init();//fixmap区域页表映射初始化
+	early_ioremap_init();//io映射初始化
+	/*2. 读取dtb文件*/
 	setup_machine_fdt(__fdt_pointer);
 
 	/*
