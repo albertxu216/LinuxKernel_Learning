@@ -65,36 +65,52 @@ void kvm_arch_hardware_disable(void)
 	csr_write(CSR_HIDELEG, 0);
 }
 
+/**
+ * @brief riscv 中kvm模块的入口函数
+ **/
 static int __init riscv_kvm_init(void)
 {
 	int rc;
 	const char *str;
 
+	/*1. 检查 RISC-V Hypervisor 扩展是否可用
+	 */
 	if (!riscv_isa_extension_available(NULL, h)) {
 		kvm_info("hypervisor extension not available\n");
 		return -ENODEV;
 	}
 
+	/*2. 检查 SBI 版本
+	 */
 	if (sbi_spec_is_0_1()) {
 		kvm_info("require SBI v0.2 or higher\n");
 		return -ENODEV;
 	}
 
+	/*3. 检查 SBI RFENCE 扩展是否可用
+	 */
 	if (!sbi_probe_extension(SBI_EXT_RFENCE)) {
 		kvm_info("require SBI RFENCE extension\n");
 		return -ENODEV;
 	}
 
-	kvm_riscv_gstage_mode_detect();
+	/*4. 检测并设置 G-stage 页表模式
+	 */
+	kvm_riscv_gstage_mode_detect();//检测并配置二级页表模式
 
-	kvm_riscv_gstage_vmid_detect();
+	kvm_riscv_gstage_vmid_detect();//检测并配置 VMID（虚拟机标识符）
 
+	/*5. 初始化 AIA
+	 *   AIA 用于管理更高级的中断功能
+	 */
 	rc = kvm_riscv_aia_init();
 	if (rc && rc != -ENODEV)
 		return rc;
 
 	kvm_info("hypervisor extension available\n");
 
+	/*6. 配置 G-stage 页表格式
+	 */
 	switch (kvm_riscv_gstage_mode()) {
 	case HGATP_MODE_SV32X4:
 		str = "Sv32x4";
@@ -111,14 +127,18 @@ static int __init riscv_kvm_init(void)
 	default:
 		return -ENODEV;
 	}
-	kvm_info("using %s G-stage page table format\n", str);
+	kvm_info("using %s G-stage page table format\n", str);//打印系统中可用的 VMID 位数
 
 	kvm_info("VMID %ld bits available\n", kvm_riscv_gstage_vmid_bits());
 
+	/*7. 如果 AIA 可用，打印支持的外部中断数量
+	 */
 	if (kvm_riscv_aia_available())
 		kvm_info("AIA available with %d guest external interrupts\n",
 			 kvm_riscv_aia_nr_hgei);
 
+	/*8. 调用 kvm_init 初始化 KVM 核心模块
+	 */
 	rc = kvm_init(sizeof(struct kvm_vcpu), 0, THIS_MODULE);
 	if (rc) {
 		kvm_riscv_aia_exit();
