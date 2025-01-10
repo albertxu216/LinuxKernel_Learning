@@ -791,6 +791,15 @@ buddy_merge_likely(unsigned long pfn, unsigned long buddy_pfn,
  * -- nyc
  */
 
+/** 
+ * @brief a.将页面释放到伙伴系统
+ * @brief b.尝试合并相邻的空闲页面块以减少内存碎片
+ * @brief c.额外操作：根据页面类型及页块隔离等标志，执行额外操作
+ * 
+ * @param page 要释放的页面块的起始页面
+ * @param pfn  页面帧号，页面的物理地址
+ * @param fpi_flags 用于控制页面释放的特殊行为
+*/
 static inline void __free_one_page(struct page *page,
 		unsigned long pfn,
 		struct zone *zone, unsigned int order,
@@ -801,28 +810,39 @@ static inline void __free_one_page(struct page *page,
 	unsigned long combined_pfn;
 	struct page *buddy;
 	bool to_tail;
-
+	/*1. 条件检查*/
 	VM_BUG_ON(!zone_is_initialized(zone));
 	VM_BUG_ON_PAGE(page->flags & PAGE_FLAGS_CHECK_AT_PREP, page);
 
 	VM_BUG_ON(migratetype == -1);
-	if (likely(!is_migrate_isolate(migratetype)))
+	if (likely(!is_migrate_isolate(migratetype)))//非隔离页块，增加计数；
 		__mod_zone_freepage_state(zone, 1 << order, migratetype);
 
 	VM_BUG_ON_PAGE(pfn & ((1 << order) - 1), page);
 	VM_BUG_ON_PAGE(bad_range(zone, page), page);
 
+	/*2.循环寻找相邻的伙伴空闲页块
+	 *  第一次找与order相同大小的相邻空闲页块并合并，变成阶数为order+1的空闲块
+	 *  第二次找order+1阶大小的相邻空闲块；
+	 *  以此类推直至找不到相邻的空闲页块为止；
+	*/
 	while (order < MAX_ORDER) {
 		if (compaction_capture(capc, page, order, migratetype)) {
 			__mod_zone_freepage_state(zone, -(1 << order),
 								migratetype);
 			return;
 		}
-
+		/*2.1 找到当前页块的伙伴页块
+		 *    伙伴页块的要求:a同属一个zone; b大小相同; c处于空闲状态;
+		 *    没找到就直接去合并;
+		 */
 		buddy = find_buddy_page_pfn(page, pfn, order, &buddy_pfn);
 		if (!buddy)
 			goto done_merging;
-
+		/*2.2 大阶页块情况, 检查迁移类型的可合并性
+		 *    考虑页块迁移类型是否相同,
+		 *    以及两个页块是否均可以合并;
+		*/
 		if (unlikely(order >= pageblock_order)) {
 			/*
 			 * We want to prevent merge between freepages on pageblock
@@ -842,17 +862,23 @@ static inline void __free_one_page(struct page *page,
 		 * Our buddy is free or it is CONFIG_DEBUG_PAGEALLOC guard page,
 		 * merge with it and move up one order.
 		 */
-		if (page_is_guard(buddy))
+
+		/*2.3 合并操作*/
+		if (page_is_guard(buddy))//清理guard标志
 			clear_page_guard(zone, buddy, order, migratetype);
 		else
+			/*从当前阶数的空闲链表中删除,准备合并*/
 			del_page_from_free_list(buddy, zone, order);
+
+		/*2.4 新页块信息更新*/
 		combined_pfn = buddy_pfn & pfn;
 		page = page + (combined_pfn - pfn);
 		pfn = combined_pfn;
 		order++;
 	}
-
+/*4. 执行合并处理*/
 done_merging:
+	/*4.1 标记合并后页块的阶数，一遍后续伙伴系统识别*/
 	set_buddy_order(page, order);
 
 	if (fpi_flags & FPI_TO_TAIL)
@@ -861,7 +887,8 @@ done_merging:
 		to_tail = shuffle_pick_tail();
 	else
 		to_tail = buddy_merge_likely(pfn, buddy_pfn, page, order);
-
+	
+	/*4.2 页面块插入空闲链表的头部或尾部*/
 	if (to_tail)
 		add_to_free_list_tail(page, zone, order, migratetype);
 	else
@@ -1294,7 +1321,7 @@ static void free_one_page(struct zone *zone,
 	__free_one_page(page, pfn, zone, order, migratetype, fpi_flags);
 	spin_unlock_irqrestore(&zone->lock, flags);
 }
-
+/*将页块释放到伙伴系统中*/
 static void __free_pages_ok(struct page *page, unsigned int order,
 			    fpi_t fpi_flags)
 {

@@ -288,6 +288,13 @@ static inline unsigned int buddy_order(struct page *page)
  *
  * For recording page's order, we use page_private(page).
  */
+
+/**
+ * @brief 检查page,buddy页块是否满足伙伴页块条件
+ *     1. 两页块是否在伙伴系统中;
+ *     2. 两页块大小是否相同;
+ *     3. 两页块是否属于同一zone;
+ * */
 static inline bool page_is_buddy(struct page *page, struct page *buddy,
 				 unsigned int order)
 {
@@ -326,6 +333,7 @@ static inline bool page_is_buddy(struct page *page, struct page *buddy,
  *
  * Assumption: *_mem_map is contiguous at least up to MAX_ORDER
  */
+/*返回伙伴页块的物理首地址*/
 static inline unsigned long
 __find_buddy_pfn(unsigned long page_pfn, unsigned int order)
 {
@@ -346,16 +354,21 @@ __find_buddy_pfn(unsigned long page_pfn, unsigned int order)
  *
  * Return: the found buddy page or NULL if not found.
  */
+
+/*找到一个空闲的伙伴页块*/
 static inline struct page *find_buddy_page_pfn(struct page *page,
 			unsigned long pfn, unsigned int order, unsigned long *buddy_pfn)
 {
+	/*1. 找到伙伴页块的物理首地址*/
 	unsigned long __buddy_pfn = __find_buddy_pfn(pfn, order);
 	struct page *buddy;
-
+	/*2. 计算page指针地址*/
 	buddy = page + (__buddy_pfn - pfn);
 	if (buddy_pfn)
 		*buddy_pfn = __buddy_pfn;
-
+	/*3. 检查是否是一个空闲且符合要求的伙伴页块
+	 *   同属一个zone,页块大小相同,且空闲;
+	 */
 	if (page_is_buddy(page, buddy, order))
 		return buddy;
 	return NULL;
