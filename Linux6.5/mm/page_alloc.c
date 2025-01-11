@@ -801,7 +801,7 @@ buddy_merge_likely(unsigned long pfn, unsigned long buddy_pfn,
  * @param fpi_flags 用于控制页面释放的特殊行为
 */
 static inline void __free_one_page(struct page *page,
-		unsigned long pfn,
+		unsigned long pfn, 
 		struct zone *zone, unsigned int order,
 		int migratetype, fpi_t fpi_flags)
 {
