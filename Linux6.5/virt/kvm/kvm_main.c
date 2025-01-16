@@ -5124,7 +5124,7 @@ static struct file_operations kvm_chardev_ops = {
 	.llseek		= noop_llseek,
 	KVM_COMPAT(kvm_dev_ioctl),
 };
-
+/*KVM 字符设备模块*/
 static struct miscdevice kvm_dev = {
 	KVM_MINOR,
 	"kvm",
@@ -6068,12 +6068,13 @@ int kvm_init(unsigned vcpu_size, unsigned vcpu_align, struct module *module)
 
 	kvm_chardev_ops.owner = module;
 
+	/*6. 设置调度切换时的回调函数*/
 	kvm_preempt_ops.sched_in = kvm_sched_in;
 	kvm_preempt_ops.sched_out = kvm_sched_out;
 
 	kvm_init_debug();
 
-	 /*6. VFIO操作初始化*/
+	 /*7. VFIO操作初始化*/
 	r = kvm_vfio_ops_init();
 	if (WARN_ON_ONCE(r))
 		goto err_vfio;
@@ -6082,7 +6083,7 @@ int kvm_init(unsigned vcpu_size, unsigned vcpu_align, struct module *module)
 	 * Registration _must_ be the very last thing done, as this exposes
 	 * /dev/kvm to userspace, i.e. all infrastructure must be setup!
 	 */
-	/*7. 注册/dev/kvm 字符设备，使用户空间可以通过该字符设备与kvm交互*/
+	/*8. 注册/dev/kvm 字符设备，使用户空间可以通过该字符设备与kvm交互*/
 	r = misc_register(&kvm_dev);
 	if (r) {
 		pr_err("kvm: misc device register failed\n");
