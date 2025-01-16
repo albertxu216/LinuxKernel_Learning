@@ -298,9 +298,12 @@ static inline unsigned int buddy_order(struct page *page)
 static inline bool page_is_buddy(struct page *page, struct page *buddy,
 				 unsigned int order)
 {
-	if (!page_is_guard(buddy) && !PageBuddy(buddy))
+	/*1. 检查伙伴页块是否在伙伴系统中,且空闲支持合并*/
+	/*Guard 页面用于调试目的，受保护，不能参与分配或合并*/
+	if (!page_is_guard(buddy) 
+			&& !PageBuddy(buddy)) //页面是否在伙伴系统中且空闲;
 		return false;
-
+	/*2. 页面块的大小是否相同*/
 	if (buddy_order(buddy) != order)
 		return false;
 
@@ -308,6 +311,7 @@ static inline bool page_is_buddy(struct page *page, struct page *buddy,
 	 * zone check is done late to avoid uselessly calculating
 	 * zone/node ids for pages that could never merge.
 	 */
+	/*3. 检查目标页块与伙伴页块是否在一个zone内*/
 	if (page_zone_id(page) != page_zone_id(buddy))
 		return false;
 

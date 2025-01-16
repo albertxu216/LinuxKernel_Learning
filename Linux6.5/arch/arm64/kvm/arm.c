@@ -2014,16 +2014,20 @@ static int __init init_subsystems(void)
 	/*
 	 * Enable hardware so that subsystem initialisation can access EL2.
 	 */
+	/*1. 使能每个cpu, 这样系统才能通过EL2*/
 	on_each_cpu(cpu_hyp_init, NULL, 1);
 
 	/*
 	 * Register CPU lower-power notifier
 	 */
+
+	/*2. 注册hyp模式下 cpu的低功耗通知器*/
 	hyp_cpu_pm_init();
 
 	/*
 	 * Init HYP view of VGIC
 	 */
+	/*3.注册hpy模式下的vgic模块  中断管理相关的模块*/
 	err = kvm_vgic_hyp_init();
 	switch (err) {
 	case 0:
@@ -2038,9 +2042,7 @@ static int __init init_subsystems(void)
 		goto out;
 	}
 
-	/*
-	 * Init HYP architected timer support
-	 */
+	/*4. 初始化hyp模式下的timer*/
 	err = kvm_timer_hyp_init(vgic_present);
 	if (err)
 		goto out;
@@ -2184,11 +2186,19 @@ static int __init init_hyp_mode(void)
 	 * The protected Hyp-mode cannot be initialized if the memory pool
 	 * allocation has failed.
 	 */
+
+	/*1. 确保受保护模式的内存资源可用，
+	 *   检查保护模式（pKVM）的内存池是否可用
+	 */
 	if (is_protected_kvm_enabled() && !hyp_mem_base)
 		goto out_err;
 
 	/*
 	 * Allocate Hyp PGD and setup Hyp identity mapping
+	 */
+
+	/*2. 初始化 Hyp 页表和 Hyp 地址空间映射
+	 *   为 Hyp 模式分配和管理虚拟地址空间
 	 */
 	err = kvm_mmu_init(&hyp_va_bits);
 	if (err)
@@ -2197,6 +2207,8 @@ static int __init init_hyp_mode(void)
 	/*
 	 * Allocate stack pages for Hypervisor-mode
 	 */
+
+	/*3.  为每个 CPU 分配 Hyp模式下 一页大小的栈空间*/
 	for_each_possible_cpu(cpu) {
 		unsigned long stack_page;
 
@@ -2212,6 +2224,8 @@ static int __init init_hyp_mode(void)
 	/*
 	 * Allocate and initialize pages for Hypervisor-mode percpu regions.
 	 */
+
+	/*4. 初始化 Per-CPU 的 Hyp 区域*/
 	for_each_possible_cpu(cpu) {
 		struct page *page;
 		void *page_addr;
@@ -2230,6 +2244,8 @@ static int __init init_hyp_mode(void)
 	/*
 	 * Map the Hyp-code called directly from the host
 	 */
+
+	/*5. 创建hyp模式下的 代码段映射*/
 	err = create_hyp_mappings(kvm_ksym_ref(__hyp_text_start),
 				  kvm_ksym_ref(__hyp_text_end), PAGE_HYP_EXEC);
 	if (err) {
@@ -2237,13 +2253,16 @@ static int __init init_hyp_mode(void)
 		goto out_err;
 	}
 
+	/*6. 创建hyp模式下的 只读数据段映射
+	 *   涉及到.hyp.rodata段 和 .rodata段
+	 */
 	err = create_hyp_mappings(kvm_ksym_ref(__hyp_rodata_start),
 				  kvm_ksym_ref(__hyp_rodata_end), PAGE_HYP_RO);
 	if (err) {
 		kvm_err("Cannot map .hyp.rodata section\n");
 		goto out_err;
 	}
-
+	
 	err = create_hyp_mappings(kvm_ksym_ref(__start_rodata),
 				  kvm_ksym_ref(__end_rodata), PAGE_HYP_RO);
 	if (err) {
@@ -2255,6 +2274,10 @@ static int __init init_hyp_mode(void)
 	 * .hyp.bss is guaranteed to be placed at the beginning of the .bss
 	 * section thanks to an assertion in the linker script. Map it RW and
 	 * the rest of .bss RO.
+	 */
+
+	/*7. 创建hyp模式下的 bss段映射
+	 *   涉及 .hyp.bss段 和 .bss段
 	 */
 	err = create_hyp_mappings(kvm_ksym_ref(__hyp_bss_start),
 				  kvm_ksym_ref(__hyp_bss_end), PAGE_HYP);
@@ -2270,9 +2293,13 @@ static int __init init_hyp_mode(void)
 		goto out_err;
 	}
 
-	/*
-	 * Map the Hyp stack pages
-	 */
+
+	/*8. 这段代码的功能是为每个 CPU 创建 Hyp 栈，并通过以下方式增强安全性和可靠性：
+	 *8.1. 分配私有虚拟地址空间：每个 CPU 拥有独立的虚拟地址范围。
+	 *8.2. 设置保护页：未映射的保护页用于检测栈溢出。
+	 *8.3. 保存地址信息：保存栈的物理和虚拟地址，便于后续操作。
+	 *8.4. 逐步检查和回滚：确保初始化过程中任何错误都能安全回滚。
+     */
 	for_each_possible_cpu(cpu) {
 		struct kvm_nvhe_init_params *params = per_cpu_ptr_nvhe_sym(kvm_init_params, cpu);
 		char *stack_page = (char *)per_cpu(kvm_arm_hyp_stack_page, cpu);
@@ -2283,6 +2310,7 @@ static int __init init_hyp_mode(void)
 		 * and guard page. The allocation is also aligned based on
 		 * the order of its size.
 		 */
+		/*8.1 分配 Hyp 栈的虚拟地址空间*/
 		err = hyp_alloc_private_va_range(PAGE_SIZE * 2, &hyp_addr);
 		if (err) {
 			kvm_err("Cannot allocate hyp stack guard page\n");
@@ -2298,6 +2326,7 @@ static int __init init_hyp_mode(void)
 		 * and addresses corresponding to the guard page have the
 		 * PAGE_SHIFT bit as 0 - this is used for overflow detection.
 		 */
+		/*8.2 映射栈页面并设置保护页*/
 		err = __create_hyp_mappings(hyp_addr + PAGE_SIZE, PAGE_SIZE,
 					    __pa(stack_page), PAGE_HYP);
 		if (err) {
@@ -2311,11 +2340,12 @@ static int __init init_hyp_mode(void)
 		 * __hyp_pa() won't do the right thing there, since the stack
 		 * has been mapped in the flexible private VA space.
 		 */
+		/*8.3 保存物理地址和虚拟地址*/
 		params->stack_pa = __pa(stack_page);
-
 		params->stack_hyp_va = hyp_addr + (2 * PAGE_SIZE);
 	}
 
+	/*9. 创建每 CPU 的 Hyp 数据区域映射*/
 	for_each_possible_cpu(cpu) {
 		char *percpu_begin = (char *)kvm_nvhe_sym(kvm_arm_hyp_percpu_base)[cpu];
 		char *percpu_end = percpu_begin + nvhe_percpu_size();
@@ -2331,8 +2361,10 @@ static int __init init_hyp_mode(void)
 		cpu_prepare_hyp_mode(cpu, hyp_va_bits);
 	}
 
+	/*10. 初始化符号*/
 	kvm_hyp_init_symbols();
 
+	/*11. 初始化保护模式*/
 	if (is_protected_kvm_enabled()) {
 		if (IS_ENABLED(CONFIG_ARM64_PTR_AUTH_KERNEL) &&
 		    cpus_have_const_cap(ARM64_HAS_ADDRESS_AUTH))
@@ -2418,65 +2450,93 @@ void kvm_arch_irq_bypass_start(struct irq_bypass_consumer *cons)
 	kvm_arm_resume_guest(irqfd->kvm);
 }
 
-/* Initialize Hyp-mode and memory mappings on all CPUs */
+/* 在所有 CPU 上初始化 Hyp 模式并设置内存映射，准备 KVM 的使用 */
 static __init int kvm_arm_init(void)
 {
 	int err;
 	bool in_hyp_mode;
+	
+	/*************************************************************/
+	/*  1. 完成体系结构相关的初始化 对应linux5.15中 kvm_arch_init   */
+	/*************************************************************/
 
+	/*1.1 调用 is_hyp_mode_available 检测硬件是否支持 Hyp 模式*/
 	if (!is_hyp_mode_available()) {
 		kvm_info("HYP mode not available\n");
 		return -ENODEV;
 	}
-
+	
+	/*1.2 检查内核命令行是否禁用了 KVM 功能*/
 	if (kvm_get_mode() == KVM_MODE_NONE) {
 		kvm_info("KVM disabled from command line\n");
 		return -ENODEV;
 	}
-
+	
+	/*1.3 初始化 KVM 使用的系统寄存器表*/
 	err = kvm_sys_reg_table_init();
 	if (err) {
 		kvm_info("Error initializing system register tables");
 		return err;
 	}
-
+	
+	/*1.4 检测当前内核是否运行在 Hyp 模式下
+	 *    如果不在 Hyp 模式，后续会尝试切换到 Hyp 模式
+	 */
 	in_hyp_mode = is_kernel_in_hyp_mode();
-
+	
+	/*1.5 检查cpu的相关功能
+	 *    cpu错误修复功能
+	 */
 	if (cpus_have_final_cap(ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE) ||
 	    cpus_have_final_cap(ARM64_WORKAROUND_1508412))
 		kvm_info("Guests without required CPU erratum workarounds can deadlock system!\n" \
 			 "Only trusted guests should be used on this system.\n");
-
+	
+	/*1.6 设置 KVM 的中间物理地址（IPA）限制*/
 	err = kvm_set_ipa_limit();
 	if (err)
 		return err;
 
+	/*1.7 初始化 ARM 的可扩展矢量扩展（SVE）支持*/
 	err = kvm_arm_init_sve();
 	if (err)
 		return err;
 
+	/*1.8 初始化虚拟机标识符（VMID）分配器
+	 *    VMID 是 ARM 架构中用于区分不同虚拟机的标识符 
+	 */
 	err = kvm_arm_vmid_alloc_init();
 	if (err) {
 		kvm_err("Failed to initialize VMID allocator.\n");
 		return err;
 	}
 
+	/*1.9 如果当前未运行在 Hyp 模式，
+	 *    则尝试通过 init_hyp_mode 切换到 Hyp 模式
+	 */
 	if (!in_hyp_mode) {
 		err = init_hyp_mode();
 		if (err)
 			goto out_err;
 	}
 
+	/*1.10 初始化向量槽，用于管理虚拟机中断向量*/
 	err = kvm_init_vector_slots();
 	if (err) {
 		kvm_err("Cannot initialise vector slots\n");
 		goto out_hyp;
 	}
 
+	/*1.11 初始化其他子系统（如 I/O 管理等）*/
 	err = init_subsystems();
 	if (err)
 		goto out_hyp;
 
+	/*1.12 根据当前模式，进行日志记录
+	 *     a. 受保护的 nVHE 模式
+	 *     b. VHE 模式
+	 *     c. 普通 Hyp 模式
+	 */
 	if (is_protected_kvm_enabled()) {
 		kvm_info("Protected nVHE mode initialized successfully\n");
 	} else if (in_hyp_mode) {
@@ -2484,15 +2544,22 @@ static __init int kvm_arm_init(void)
 	} else {
 		kvm_info("Hyp mode initialized successfully\n");
 	}
+	/*************************************************************/
+	/*                   体系结构相关的初始化结束                  */
+	/*************************************************************/
+
 
 	/*
 	 * FIXME: Do something reasonable if kvm_init() fails after pKVM
 	 * hypervisor protection is finalized.
 	 */
+
+	/*2. 核心操作： KVM 初始化 */
 	err = kvm_init(sizeof(struct kvm_vcpu), 0, THIS_MODULE);
 	if (err)
 		goto out_subs;
 
+	/*3. 初始化完成标记*/
 	kvm_arm_initialised = true;
 
 	return 0;
@@ -2549,5 +2616,5 @@ enum kvm_mode kvm_get_mode(void)
 {
 	return kvm_mode;
 }
-
+/*kvm 内核模块入口*/
 module_init(kvm_arm_init);

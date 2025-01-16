@@ -100,7 +100,7 @@ static int __init riscv_kvm_init(void)
 
 	kvm_riscv_gstage_vmid_detect();//检测并配置 VMID（虚拟机标识符）
 
-	/*5. 初始化 AIA
+	/*5. 初始化 AIA 以及中断虚拟化的一些全局参数;
 	 *   AIA 用于管理更高级的中断功能
 	 */
 	rc = kvm_riscv_aia_init();

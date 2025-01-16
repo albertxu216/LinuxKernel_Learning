@@ -6012,21 +6012,26 @@ void kvm_unregister_perf_callbacks(void)
 }
 #endif
 
+/*设置虚拟机环境并确保所有相关子系统的正常运行*/
 int kvm_init(unsigned vcpu_size, unsigned vcpu_align, struct module *module)
 {
 	int r;
 	int cpu;
-
+	/*1. 设置cpu热插拔时的回调函数*/
 #ifdef CONFIG_KVM_GENERIC_HARDWARE_ENABLING
 	r = cpuhp_setup_state_nocalls(CPUHP_AP_KVM_ONLINE, "kvm/cpu:online",
 				      kvm_online_cpu, kvm_offline_cpu);
 	if (r)
 		return r;
-
+	/*注册 syscore_ops，用于在系统进入休眠和恢复时处理 KVM 特定操作*/
 	register_syscore_ops(&kvm_syscore_ops);
 #endif
 
 	/* A kmem cache lets us meet the alignment requirements of fx_save. */
+	/*2. 创建vcpu缓存,
+	 *   创建一个内存缓存池 kvm_vcpu_cache，
+	 *   用于分配 kvm_vcpu 结构.
+	 */
 	if (!vcpu_align)
 		vcpu_align = __alignof__(struct kvm_vcpu);
 	kvm_vcpu_cache =
@@ -6041,6 +6046,9 @@ int kvm_init(unsigned vcpu_size, unsigned vcpu_align, struct module *module)
 		goto err_vcpu_cache;
 	}
 
+	/*3. 为每个 CPU 分配一个 kick_mask，
+	 *   用于管理 CPU 中断和调度相关的操作
+	 */
 	for_each_possible_cpu(cpu) {
 		if (!alloc_cpumask_var_node(&per_cpu(cpu_kick_mask, cpu),
 					    GFP_KERNEL, cpu_to_node(cpu))) {
@@ -6048,11 +6056,12 @@ int kvm_init(unsigned vcpu_size, unsigned vcpu_align, struct module *module)
 			goto err_cpu_kick_mask;
 		}
 	}
-
+	/*4. 创建工作队列， 用于处理VM的shutdown操作*/
 	r = kvm_irqfd_init();
 	if (r)
 		goto err_irqfd;
 
+	/*5. 创建用于分配kvm_async_pf的slab缓存*/
 	r = kvm_async_pf_init();
 	if (r)
 		goto err_async_pf;
@@ -6064,6 +6073,7 @@ int kvm_init(unsigned vcpu_size, unsigned vcpu_align, struct module *module)
 
 	kvm_init_debug();
 
+	 /*6. VFIO操作初始化*/
 	r = kvm_vfio_ops_init();
 	if (WARN_ON_ONCE(r))
 		goto err_vfio;
@@ -6072,6 +6082,7 @@ int kvm_init(unsigned vcpu_size, unsigned vcpu_align, struct module *module)
 	 * Registration _must_ be the very last thing done, as this exposes
 	 * /dev/kvm to userspace, i.e. all infrastructure must be setup!
 	 */
+	/*7. 注册/dev/kvm 字符设备，使用户空间可以通过该字符设备与kvm交互*/
 	r = misc_register(&kvm_dev);
 	if (r) {
 		pr_err("kvm: misc device register failed\n");
