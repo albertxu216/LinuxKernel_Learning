@@ -89,6 +89,7 @@ unsigned int kmem_cache_size(struct kmem_cache *s)
 EXPORT_SYMBOL(kmem_cache_size);
 
 #ifdef CONFIG_DEBUG_VM
+/*检查名称、大小是否合法，以及是否在中断上下文中*/
 static int kmem_cache_sanity_check(const char *name, unsigned int size)
 {
 	if (!name || in_interrupt() || size > KMALLOC_MAX_SIZE) {
@@ -219,6 +220,8 @@ static struct kmem_cache *create_cache(const char *name,
 		useroffset = usersize = 0;
 
 	err = -ENOMEM;
+
+	/*1. 创建一个新的kmem_cache数据结构，并填充*/
 	s = kmem_cache_zalloc(kmem_cache, GFP_KERNEL);
 	if (!s)
 		goto out;
@@ -232,11 +235,14 @@ static struct kmem_cache *create_cache(const char *name,
 	s->usersize = usersize;
 #endif
 
+	/*2. 创建该slab描述符*/
 	err = __kmem_cache_create(s, flags);
 	if (err)
 		goto out_free_cache;
 
 	s->refcount = 1;
+	
+	/*3. 将新建的slab 描述加入slab_cache 链表中*/
 	list_add(&s->list, &slab_caches);
 	return s;
 
@@ -293,14 +299,22 @@ kmem_cache_create_usercopy(const char *name,
 	 * It's also possible that this is the first cache created with
 	 * SLAB_STORE_USER and we should init stack_depot for it.
 	 */
+	/*0. 如果启用了SLUB调试选项，则初始化相关调试功能*/
 	if (flags & SLAB_DEBUG_FLAGS)
 		static_branch_enable(&slub_debug_enabled);
 	if (flags & SLAB_STORE_USER)
 		stack_depot_init();
 #endif
 
+	/*1. 申请slab_mutex互斥锁进行上锁保护
+	 */
 	mutex_lock(&slab_mutex);
 
+	/*2.做必要的检查
+	 *  检查名称、大小是否合法，
+	 *  以及是否在中断上下文中
+	 *  验证传入的flag标志是否在允许范围内
+	 */
 	err = kmem_cache_sanity_check(name, size);
 	if (err) {
 		goto out_unlock;
@@ -325,18 +339,23 @@ kmem_cache_create_usercopy(const char *name,
 	    WARN_ON(!usersize && useroffset) ||
 	    WARN_ON(size < usersize || size - usersize < useroffset))
 		usersize = useroffset = 0;
-
+		
+	/*3. 检查是否有现成的slab描述符可复用
+	 *   调用__kmem_cache_alias 判断是否可复用
+	 */
 	if (!usersize)
 		s = __kmem_cache_alias(name, size, align, flags, ctor);
 	if (s)
 		goto out_unlock;
 
+	/*4. 没有可复用的slab描述符，重新分配一个缓冲区存放slab描述符的名称*/
 	cache_name = kstrdup_const(name, GFP_KERNEL);
 	if (!cache_name) {
 		err = -ENOMEM;
 		goto out_unlock;
 	}
 
+	/*5. 创建一个新的slab描述符*/
 	s = create_cache(cache_name, size,
 			 calculate_alignment(flags, align, size),
 			 flags, useroffset, usersize, ctor, NULL);
@@ -346,6 +365,7 @@ kmem_cache_create_usercopy(const char *name,
 	}
 
 out_unlock:
+	/*6. 释放互斥锁*/
 	mutex_unlock(&slab_mutex);
 
 	if (err) {
@@ -392,6 +412,7 @@ struct kmem_cache *
 kmem_cache_create(const char *name, unsigned int size, unsigned int align,
 		slab_flags_t flags, void (*ctor)(void *))
 {
+	/*1.调用kmem_cache_create_usercopy实现*/
 	return kmem_cache_create_usercopy(name, size, align, flags, 0, 0,
 					  ctor);
 }

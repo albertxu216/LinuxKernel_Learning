@@ -1352,7 +1352,7 @@ static struct slab *kmem_getpages(struct kmem_cache *cachep, gfp_t flags,
 	struct slab *slab;
 
 	flags |= cachep->allocflags;
-
+	/*1. 从伙伴系统 申请物理页面*/
 	folio = (struct folio *) __alloc_pages_node(nodeid, flags, cachep->gfporder);
 	if (!folio) {
 		slab_out_of_memory(cachep, flags, nodeid);
@@ -1363,7 +1363,7 @@ static struct slab *kmem_getpages(struct kmem_cache *cachep, gfp_t flags,
 
 	account_slab(slab, cachep->gfporder, cachep, flags);
 	__folio_set_slab(folio);
-	/* Make the flag visible before any changes to folio->mapping */
+	/* Make the flag visible  before any changes to folio->mapping */
 	smp_wmb();
 	/* Record if ALLOC_NO_WATERMARKS was set when allocating the slab */
 	if (sk_memalloc_socks() && folio_is_pfmemalloc(folio))
@@ -1740,6 +1740,7 @@ static struct array_cache __percpu *alloc_kmem_cache_cpus(
 
 static int __ref setup_cpu_cache(struct kmem_cache *cachep, gfp_t gfp)
 {
+	/*slab 子系统初始化完成，则直接调用 enable_cpucache */
 	if (slab_state >= FULL)
 		return enable_cpucache(cachep, gfp);
 
@@ -1902,6 +1903,10 @@ static bool set_on_slab_cache(struct kmem_cache *cachep,
  * cacheline.  This can be beneficial if you're counting cycles as closely
  * as davem.
  */
+/**
+ * @brief 根据传入的缓存描述符 (struct kmem_cache *cachep) 和标志位 (slab_flags_t flags)，
+ *        为特定的内存分配需求创建一个 slab 缓存
+ */
 int __kmem_cache_create(struct kmem_cache *cachep, slab_flags_t flags)
 {
 	size_t ralign = BYTES_PER_WORD;
@@ -1925,21 +1930,24 @@ int __kmem_cache_create(struct kmem_cache *cachep, slab_flags_t flags)
 #endif
 #endif
 
-	/*
-	 * Check that size is in terms of words.  This is needed to avoid
-	 * unaligned accesses for some archs when redzoning is used, and makes
-	 * sure any on-slab bufctl's are also correctly aligned.
+	/*1.  对齐方式的确认与调整；
+	 */
+	/*1.1 让slab 描述符的大小size 与 系统的word长度对齐
+	 *    确保对象大小是字对齐的，
+	 *    避免在某些架构上因未对齐访问引发错误；
 	 */
 	size = ALIGN(size, BYTES_PER_WORD);
 
-	if (flags & SLAB_RED_ZONE) {
+	if (flags & SLAB_RED_ZONE) {/*SLAB_RED_ZONE，检查是否溢出，实现调试功能*/
 		ralign = REDZONE_ALIGN;
 		/* If redzoning, ensure that the second redzone is suitably
 		 * aligned, by adjusting the object size accordingly. */
 		size = ALIGN(size, REDZONE_ALIGN);
 	}
 
-	/* 3) caller mandated alignment */
+	/*1.2 强制对齐；
+	 *    如果指定的对齐方式 比当前对齐方式ralign更严格，
+	 *    则调整为更严格的对齐方式；*/
 	if (ralign < cachep->align) {
 		ralign = cachep->align;
 	}
@@ -1950,11 +1958,25 @@ int __kmem_cache_create(struct kmem_cache *cachep, slab_flags_t flags)
 	 * 4) Store it.
 	 */
 	cachep->align = ralign;
+
+	/*2. 着色区的处理：
+	 *   colour_off 表示一个着色区的长度；
+	 *   它和 L1 高速缓存行大小相同；
+	 */
 	cachep->colour_off = cache_line_size();
 	/* Offset must be a multiple of the alignment. */
 	if (cachep->colour_off < cachep->align)
 		cachep->colour_off = cachep->align;
 
+	/*3. 根据slab初试化程度，确认分配掩码；
+	 *   枚举类型 slab_state 表示 slab 系统初始化的状态；
+	 *   如 DOWN、PARTIAL、PARTIAL_NODE、UP 和 FULL 等；
+	 *   FULL 和 UP 表示slab子系统已经初始化完成；
+	 *   当 slab 机制完全初始化完成后状态变成 FULL；
+	 * 
+	 *   slab_is_available()表示当 slab 分配器处于 UP 或者 FULL 状态时，
+	 *   分配掩码可以使用 GFP_KERNEL；否则，只能使用 GFP_NOWAIT；
+	 */
 	if (slab_is_available())
 		gfp = GFP_KERNEL;
 	else
@@ -1984,7 +2006,7 @@ int __kmem_cache_create(struct kmem_cache *cachep, slab_flags_t flags)
 #endif
 
 	kasan_cache_create(cachep, &size, &flags);
-
+	/*slab 对象的大小按照 cachep->align 大小来对齐*/
 	size = ALIGN(size, cachep->align);
 	/*
 	 * We should restrict the number of objects in a slab to implement
@@ -2015,23 +2037,46 @@ int __kmem_cache_create(struct kmem_cache *cachep, slab_flags_t flags)
 		}
 	}
 #endif
+	/*4. slab分配器的内存布局设置；
+	 *   
+	 *   会根据三种不同的slab分配器布局模式，进行设置，主要解决以下问题：
+	 *   a. 一个slab分配器 需要多少个连续物理页面？
+	 *   b. 一个slab分配器 可包含多少个slab对象？
+	 *   c. 管理slab对象的大小是多少？
+	 *   d. 一个slab分配器包含多少个着色区？
+	 */
 
+	/*4.1 OBJFREELIST_SLAB 模式
+	 *    若 freelist 小于一个 slab 对象的大小 并且 没有指定构造函数，
+	 *    那么 slab 分配器就可以采用 OBJFREELIST_SLAB 模式
+	 */
 	if (set_objfreelist_slab_cache(cachep, size, flags)) {
 		flags |= CFLGS_OBJFREELIST_SLAB;
 		goto done;
 	}
 
+	/*4.2 OFF_SLAB 模式
+	 *    若一个 slab 分配器的剩余空间小于 freelist 数组的大小，
+	 *    那么使用 OFF_SLAB 模式，额外分配内存用于管理freelist 数组
+	 */
 	if (set_off_slab_cache(cachep, size, flags)) {
 		flags |= CFLGS_OFF_SLAB;
 		goto done;
 	}
 
+	/*4.3 正常模式
+	 *    若一个 slab 分配器的剩余空间大于 slab 管理数组freelist的大小，
+	 *    那么使用正常模式
+	 */
 	if (set_on_slab_cache(cachep, size, flags))
 		goto done;
 
 	return -E2BIG;
 
 done:
+	/*5. 配置slab描述符*/
+
+	/*freelist_size 表示一个 slab 分配器中管理区————freelist 大小*/
 	cachep->freelist_size = cachep->num * sizeof(freelist_idx_t);
 	cachep->flags = flags;
 	cachep->allocflags = __GFP_COMP;
@@ -2041,6 +2086,7 @@ done:
 		cachep->allocflags |= GFP_DMA32;
 	if (flags & SLAB_RECLAIM_ACCOUNT)
 		cachep->allocflags |= __GFP_RECLAIMABLE;
+	/*size 表示一个 slab 对象的大小*/
 	cachep->size = size;
 	cachep->reciprocal_buffer_size = reciprocal_value(size);
 
@@ -2055,7 +2101,7 @@ done:
 		is_debug_pagealloc_cache(cachep))
 		cachep->flags &= ~(SLAB_RED_ZONE | SLAB_STORE_USER);
 #endif
-
+	/*5.1 继续配置 slab 描述符*/
 	err = setup_cpu_cache(cachep, gfp);
 	if (err) {
 		__kmem_cache_release(cachep);
@@ -2518,6 +2564,7 @@ static void slab_put_obj(struct kmem_cache *cachep,
 /*
  * Grow (by 1) the number of slabs within a cache.  This is called by
  * kmem_cache_alloc() when there are no active objs left in a cache.
+ * 扩展slab，当共享对象缓存池，slab节点没有空闲对象时，需要扩展slab；
  */
 static struct slab *cache_grow_begin(struct kmem_cache *cachep,
 				gfp_t flags, int nodeid)
@@ -2533,19 +2580,26 @@ static struct slab *cache_grow_begin(struct kmem_cache *cachep,
 	 * Be lazy and only check for valid flags here,  keeping it out of the
 	 * critical path in kmem_cache_alloc().
 	 */
+	/*0. 标志检查，条件检查，中断环境检查*/
 	if (unlikely(flags & GFP_SLAB_BUG_MASK))
 		flags = kmalloc_fix_flags(flags);
 
 	WARN_ON_ONCE(cachep->ctor && (flags & __GFP_ZERO));
 	local_flags = flags & (GFP_CONSTRAINT_MASK|GFP_RECLAIM_MASK);
 
-	check_irq_off();
+	check_irq_off();//确认中断已经关闭；
 	if (gfpflags_allow_blocking(local_flags))
 		local_irq_enable();
 
 	/*
 	 * Get mem for the objs.  Attempt to allocate a physical page from
 	 * 'nodeid'.
+	 */
+
+	/*1. 给slab 分配物理页面，从伙伴系统中分配；
+	 *   分配一个 slab分配器所需要的物理页面,
+	 *   这里会从指定的节点（nodeid）分配 2^cachep->gfporder个页面；
+	 *   调用的是__alloc_pages_node来从伙伴系统分配物理页面；
 	 */
 	slab = kmem_getpages(cachep, local_flags, nodeid);
 	if (!slab)
@@ -2555,6 +2609,10 @@ static struct slab *cache_grow_begin(struct kmem_cache *cachep,
 	n = get_node(cachep, slab_node);
 
 	/* Get colour for the slab, and cal the next value. */
+	/*2. 计算slab分配器的着色区大小和实际偏移,便于后面为slab管理区分配freelist
+	 *   offset在分配对象时用于调整起始地址，
+	 *   使得不同slab的对象在缓存行中的位置不同，提高缓存利用率；
+	 */
 	n->colour_next++;
 	if (n->colour_next >= cachep->colour)
 		n->colour_next = 0;
@@ -2573,14 +2631,22 @@ static struct slab *cache_grow_begin(struct kmem_cache *cachep,
 	kasan_poison_slab(slab);
 
 	/* Get slab management. */
+	/*3. 计算slab管理区freelist的起始地址
+	 *   并为slab分配管理结构 freelist
+	 *   这里会根据slab分配器的不同模式 对管理区进行分配；
+	 */
+	/*3.1 找到管理区首地址，并分配freelist*/
 	freelist = alloc_slabmgmt(cachep, slab, offset,
 			local_flags & ~GFP_CONSTRAINT_MASK, slab_node);
-	if (OFF_SLAB(cachep) && !freelist)
+	if (OFF_SLAB(cachep) && !freelist)//如果是OFF_SLAB模式，并且freelist没申请成功，跳转到opps1去清理
 		goto opps1;
-
+	/*3.2 建立页面与缓存的映射关系，关联freelist*/
 	slab->slab_cache = cachep;
 	slab->freelist = freelist;
 
+	/*4. 初始化slab中的对象（调用构造函数，设置freelist等）
+	 *   OBJFREELIST_SLAB 模式：使用最后一个slab对象作为管理区；
+	 */
 	cache_init_objs(cachep, slab);
 
 	if (gfpflags_allow_blocking(local_flags))
@@ -2853,7 +2919,11 @@ static __always_inline int alloc_block(struct kmem_cache *cachep,
 
 	return batchcount;
 }
-
+/* 慢速路径分配对象
+ * 本地CPU对象缓存池为空，即没有空闲slab对象,
+ * 则从共享对象缓存池、共享数组、通过扩展slab 向本地CPU对象缓存池ac 迁移
+ * 并弹出本地对象缓存池中最后一个 slab对象；
+ */
 static void *cache_alloc_refill(struct kmem_cache *cachep, gfp_t flags)
 {
 	int batchcount;
@@ -2862,12 +2932,17 @@ static void *cache_alloc_refill(struct kmem_cache *cachep, gfp_t flags)
 	int node;
 	void *list = NULL;
 	struct slab *slab;
-
+	/*0. 确保本地关中断
+	 *   获取当前 CPU 的 NUMA 节点 ID
+	 *   获取CPU本地对象缓冲池ac;
+	 *   获取slab节点;
+	 *   获取共享对象缓存池 shared;
+	 */
 	check_irq_off();
 	node = numa_mem_id();
 
-	ac = cpu_cache_get(cachep);
-	batchcount = ac->batchcount;
+	ac = cpu_cache_get(cachep);//获取CPU本地对象缓冲池ac
+	batchcount = ac->batchcount;//单批次最大可迁移数量
 	if (!ac->touched && batchcount > BATCHREFILL_LIMIT) {
 		/*
 		 * If there was little recent activity on this cache, then
@@ -2876,43 +2951,70 @@ static void *cache_alloc_refill(struct kmem_cache *cachep, gfp_t flags)
 		 */
 		batchcount = BATCHREFILL_LIMIT;
 	}
-	n = get_node(cachep, node);
+	n = get_node(cachep, node);//获取当前NUMA节点的 slab节点
 
 	BUG_ON(ac->avail > 0 || !n);
-	shared = READ_ONCE(n->shared);
+	shared = READ_ONCE(n->shared);//获取当前节点的共享对象缓存池 shared
+
+	/*1. 若共享缓存池为空、当前节点没有可用对象，则直接去扩展slab*/
 	if (!n->free_objects && (!shared || !shared->avail))
 		goto direct_grow;
-
+	/*2. 加锁保护 NUMA 节点的共享和 slab 数据结构*/
 	raw_spin_lock(&n->list_lock);
 	shared = READ_ONCE(n->shared);
 
 	/* See if we can refill from the shared array */
+	/*3. 从共享对象缓冲池shared 迁移 到本地缓存池
+	 *   如果共享对象缓冲池shared 中有空闲对象,
+	 *   则从共享对象缓冲池shared 向 本地对象缓冲池ac 迁移 batchcount个 空闲对象;
+	 *   执行迁移操作(transfer_objects);
+	 */
 	if (shared && transfer_objects(ac, shared, batchcount)) {
-		shared->touched = 1;
-		goto alloc_done;
+		shared->touched = 1;// 标记共享缓存最近被访问
+		goto alloc_done;	// 如果成功，从共享缓存补充完成，跳转至完成流程
 	}
 
+	/*4. 从 slab节点 迁移空闲对象 到 本地对象缓存池ac
+	 *   如果共享对象缓存池中没有空闲对象；
+	 *   尝试从当前NUMA节点的 slab节点中 (slabs_partial , slabs_free 链表) 
+	 *   迁移 batchcount 个空闲对象到本地缓冲池；
+	*/
 	while (batchcount > 0) {
 		/* Get slab alloc is to come from. */
+		/*4.1 获取salb节点中第一个成员；
+		 *    查看 slabs_partial , slabs_free 链表
+		 *    返回该链表中第一个slab成员；
+		 *    若无slab可用，则跳转到 扩展slab 流程中；
+		 */
 		slab = get_first_slab(n, false);
 		if (!slab)
 			goto must_grow;
 
 		check_spinlock_acquired(cachep);
-
+		/*4.2 从slab中迁移batchcount个空闲对象 到 本地缓存池中*/
 		batchcount = alloc_block(cachep, ac, slab, batchcount);
+
+		/*4.3 根据 slab 使用情况修正其链表位置*/
 		fixup_slab_list(cachep, n, slab, &list);
 	}
 
 must_grow:
+	/*4.4. 更新 NUMA 节点的 可用对象free_objects 计数*/
 	n->free_objects -= ac->avail;
 alloc_done:
+	/*5. 分配成功，释放锁 并 修正调试数据（用于对象泄漏检测）*/
 	raw_spin_unlock(&n->list_lock);
 	fixup_objfreelist_debug(cachep, &list);
 
 direct_grow:
+	/*6. 本地缓存仍为空,扩展slab，即重新从伙伴系统申请物理内存分配到slab分配器
+	 *   a.共享对象缓存池没有空闲对象 及 b.slab节点没有空闲对象;
+	 *   说明当前NUMA节点没有slab空闲对象;
+	 *   只能重新分配slab分配器,这就是一开始初始化和配置slab描述符的情景;
+	 */
 	if (unlikely(!ac->avail)) {
 		/* Check if we can use obj in pfmemalloc slab */
+		/*6.1 检查是否可以使用 pfmemalloc 的特殊 slab（用于内存压力情况下）*/
 		if (sk_memalloc_socks()) {
 			void *obj = cache_alloc_pfmemalloc(cachep, n, flags);
 
@@ -2920,6 +3022,9 @@ direct_grow:
 				return obj;
 		}
 
+		/*6.2 扩展slab分配器(分配一个slab分配器),
+		 *    然后返回该slab分配器中第一个物理页面的page结构体指针
+		 */
 		slab = cache_grow_begin(cachep, gfp_exact_node(flags), node);
 
 		/*
@@ -2927,15 +3032,27 @@ direct_grow:
 		 * then ac could change.
 		 */
 		ac = cpu_cache_get(cachep);
-		if (!ac->avail && slab)
+
+		/*6.3 从新扩展的slab分配器中 迁移 batchcount 个空闲对象 到 本地对象缓存池ac 中*/
+		if (!ac->avail && slab) 
 			alloc_block(cachep, ac, slab, batchcount);
+
+		/*6.4 将刚分配的slab分配器添加到合适的队列中，
+		 *    这个场景下应该添加到slabs partial 链表中
+		 */
 		cache_grow_end(cachep, slab);
 
+		/*6.5 扩展slab失败,
+		 *    本地缓存池中依然没有空闲对象,返回失败
+		 */
 		if (!ac->avail)
 			return NULL;
 	}
+
+	/*7. 设置本地对象缓冲池的touched 为1，表示刚刚使用过本地对象缓冲池。*/
 	ac->touched = 1;
 
+	/*8. 从本地对象缓存区 弹出一个空闲对象*/
 	return ac->entry[--ac->avail];
 }
 
@@ -2979,14 +3096,30 @@ static void *cache_alloc_debugcheck_after(struct kmem_cache *cachep,
 #define cache_alloc_debugcheck_after(a, b, objp, d) (objp)
 #endif
 
+/**
+ * @brief 通过快速或慢速路径 从本地对象缓存池分配slab对象；
+ *        a.如果本地对象缓存池中有空闲的对象，则直接分配；
+ *        b.如果没有，则尝试慢速路径分配，
+ *        即：从当前节点对应的共享对象缓存池、slab分配器、或扩展slab 
+ *        来将对应的空闲对象迁移至 本地对象缓存池，并分配；
+ */
 static inline void *____cache_alloc(struct kmem_cache *cachep, gfp_t flags)
 {
 	void *objp;
 	struct array_cache *ac;
-
+	/*0. 检查是否处于关中断状态*/
 	check_irq_off();
 
+	/*1. 获取slab描述符中cache的本地CPU对象缓冲池ac*/
 	ac = cpu_cache_get(cachep);
+
+	/*2. 快速路径: 从当前CPU 本地缓存池中快速获取对象;
+	 *
+	 *   判断本地对象缓冲池中有没有空闲的对象;
+	 *   ac->avail 表示本地对象缓冲池中有空闲对象;
+	 *   这里直接通过 ac->entry[--ac->avai] 弹出最后一个 slab对象。
+	 *   获取到slab对象后, 去out处返回该objp slab对象
+	 */
 	if (likely(ac->avail)) {
 		ac->touched = 1;
 		objp = ac->entry[--ac->avail];
@@ -2995,12 +3128,17 @@ static inline void *____cache_alloc(struct kmem_cache *cachep, gfp_t flags)
 		goto out;
 	}
 
+	/*3. 慢速路径: 从共享缓存池、slab分配器、或扩展slab分配器 来分配；
+	 *   本地CPU缓存池中没有足够的对象,尝试从共享slab中 重新填充本地CPU缓存池;
+	 */
 	STATS_INC_ALLOCMISS(cachep);
 	objp = cache_alloc_refill(cachep, flags);
+
 	/*
 	 * the 'ac' may be updated by cache_alloc_refill(),
 	 * and kmemleak_erase() requires its correct value.
 	 */
+	/*4. 再次获取本地CPU 缓存池*/
 	ac = cpu_cache_get(cachep);
 
 out:
@@ -3200,6 +3338,7 @@ out:
 }
 #else
 
+/*分配slab缓存对象*/
 static __always_inline void *
 __do_cache_alloc(struct kmem_cache *cachep, gfp_t flags, int nodeid __maybe_unused)
 {
@@ -3208,6 +3347,7 @@ __do_cache_alloc(struct kmem_cache *cachep, gfp_t flags, int nodeid __maybe_unus
 
 #endif /* CONFIG_NUMA */
 
+/*从指定NUMA节点 分配物理对象*/
 static __always_inline void *
 slab_alloc_node(struct kmem_cache *cachep, struct list_lru *lru, gfp_t flags,
 		int nodeid, size_t orig_size, unsigned long caller)
@@ -3217,23 +3357,42 @@ slab_alloc_node(struct kmem_cache *cachep, struct list_lru *lru, gfp_t flags,
 	struct obj_cgroup *objcg = NULL;
 	bool init = false;
 
+	/*1. 预分配检查，涉及对象 cgroup 资源限制*/
 	flags &= gfp_allowed_mask;
 	cachep = slab_pre_alloc_hook(cachep, lru, &objcg, 1, flags);
 	if (unlikely(!cachep))
 		return NULL;
 
+	/*2. 使用 KFENCE 机制分配对象；
+	 *   如果 kfence_alloc() 能够满足分配需求（可能是为了检测越界访问），
+	 *   直接返回 objp，无需再进入普通分配流程
+	 */
 	objp = kfence_alloc(cachep, orig_size, flags);
 	if (unlikely(objp))
 		goto out;
 
+	/*3.  正常slab对象分配流程
+	 *3.1 首先关中断，因为要从本地CPU对象缓存池中分配空闲对象，
+	 *    防止cpu资源竞争，保证slab分配的原子性；
+	 *3.2 其次调用__do_cache_alloc -> ____cache_alloc 进行快速或慢速路径
+	 *    从本地对象缓存池分配slab对象；
+	 *3.3 最后 开中断；
+	 */
+	/*3.1 关中断*/
 	local_irq_save(save_flags);
+	/*3.2 分配slab对象*/
 	objp = __do_cache_alloc(cachep, flags, nodeid);
+	/*3.3 开中断*/
 	local_irq_restore(save_flags);
+
+	/*4. 分配后调试检查*/
 	objp = cache_alloc_debugcheck_after(cachep, flags, objp, caller);
 	prefetchw(objp);
+	/*5. 初始化分配的对象*/
 	init = slab_want_init_on_alloc(flags, cachep);
 
 out:
+	/*6. 后处理钩子*/
 	slab_post_alloc_hook(cachep, objcg, flags, 1, &objp, init,
 				cachep->object_size);
 	return objp;
@@ -3243,6 +3402,7 @@ static __always_inline void *
 slab_alloc(struct kmem_cache *cachep, struct list_lru *lru, gfp_t flags,
 	   size_t orig_size, unsigned long caller)
 {
+	/*1.调用slab_alloc_node 指定slab缓存,指定node去分配*/
 	return slab_alloc_node(cachep, lru, flags, NUMA_NO_NODE, orig_size,
 			       caller);
 }
@@ -3294,25 +3454,34 @@ static void free_block(struct kmem_cache *cachep, void **objpp,
 		n->total_slabs--;
 	}
 }
-
+/*将本地对象缓存池中的空闲对象 释放到 共享缓存池、或slab节点的free_list中*/
 static void cache_flusharray(struct kmem_cache *cachep, struct array_cache *ac)
 {
 	int batchcount;
 	struct kmem_cache_node *n;
 	int node = numa_mem_id();
 	LIST_HEAD(list);
-
+	/*一次最多迁移的对象数量*/
 	batchcount = ac->batchcount;
-
+	/*确保关中断*/
 	check_irq_off();
+	/*当前slab节点*/
 	n = get_node(cachep, node);
+	/*上锁*/
 	raw_spin_lock(&n->list_lock);
+
+	/*1. 优先迁移到 共享对象缓存池 
+	 *   如果共享对象缓存池存在，且其空闲对象数量没达到limit
+	 *   则从 本地对象缓存池 迁移 batchcount 个空闲对象 到共享缓存池；
+	 */
 	if (n->shared) {
 		struct array_cache *shared_array = n->shared;
+		/*1.1 当前共享缓存池中，还能容纳max个空闲对象*/
 		int max = shared_array->limit - shared_array->avail;
 		if (max) {
 			if (batchcount > max)
 				batchcount = max;
+			/*1.2 将本地缓存池中的空闲对象复制到共享对象缓存池中*/
 			memcpy(&(shared_array->entry[shared_array->avail]),
 			       ac->entry, sizeof(void *) * batchcount);
 			shared_array->avail += batchcount;
@@ -3320,6 +3489,10 @@ static void cache_flusharray(struct kmem_cache *cachep, struct array_cache *ac)
 		}
 	}
 
+	/*2. 直接释放到slab中；
+	 *   释放 batchcount 个对象 到 slabs_free slabs_partial链表，
+	 *   并将它们加入 slab 的 free list；
+	 */
 	free_block(cachep, ac->entry, batchcount, node, &list);
 free_done:
 #if STATS
@@ -3337,7 +3510,11 @@ free_done:
 #endif
 	raw_spin_unlock(&n->list_lock);
 	ac->avail -= batchcount;
+
+	/*把本地对象缓冲池中剩余的空闲对象往前移，腾出已释放的空间，避免碎片化*/
 	memmove(ac->entry, &(ac->entry[batchcount]), sizeof(void *)*ac->avail);
+	
+	/*销毁已完全释放的 slab，如果 list 中的 slab 没有对象可用，则释放 slab 物理页*/
 	slabs_destroy(cachep, &list);
 }
 
@@ -3381,10 +3558,13 @@ static __always_inline void __cache_free(struct kmem_cache *cachep, void *objp,
 void ___cache_free(struct kmem_cache *cachep, void *objp,
 		unsigned long caller)
 {
+	/*1. 获取本地对象缓存池ac*/
 	struct array_cache *ac = cpu_cache_get(cachep);
-
+	/*确保关中断*/
 	check_irq_off();
+	/*内存泄漏相关处理，用于告诉kmemleak机制，该对象已释放*/
 	kmemleak_free_recursive(objp, cachep->flags);
+	/*调试检查*/
 	objp = cache_free_debugcheck(cachep, objp, caller);
 
 	/*
@@ -3394,43 +3574,60 @@ void ___cache_free(struct kmem_cache *cachep, void *objp,
 	 * variable to skip the call, which is mostly likely to be present in
 	 * the cache.
 	 */
+	/*2. 如果所要释放的sla对象属于非本地的NUMA节点，则释放到远端节点*/
 	if (nr_online_nodes > 1 && cache_free_alien(cachep, objp))
 		return;
 
+	/*3. 如果本地对象缓存池已满
+	 *   即本地对象缓存池的空闲对象 超过了设置的阈值限制；
+	 *   则需要cache_flusharray() 去刷新，回收slab分配器
+	 */
 	if (ac->avail < ac->limit) {
 		STATS_INC_FREEHIT(cachep);
 	} else {
 		STATS_INC_FREEMISS(cachep);
+		/*3.1 回收slab空闲对象*/
 		cache_flusharray(cachep, ac);
 	}
 
+	/*4. 对于socket 相关进程 ，检查是否使用了pfmemalloc机制
+	 *   pfmemalloc机制申请的slab 需要特殊释放
+	 */
 	if (sk_memalloc_socks()) {
 		struct slab *slab = virt_to_slab(objp);
 
 		if (unlikely(slab_test_pfmemalloc(slab))) {
+			/*4.1 pfmemalloc申请的slab对象需要特殊释放*/
 			cache_free_pfmemalloc(cachep, slab, objp);
 			return;
 		}
 	}
 
+	/*5. 释放对象到本地对象缓存池中
+	 *   其实就是执行：ac->entry[ac->avail++] = objp
+	 *   将对象objp入队；
+	 */
 	__free_one(ac, objp);
 }
 
 static __always_inline
 void *__kmem_cache_alloc_lru(struct kmem_cache *cachep, struct list_lru *lru,
 			     gfp_t flags)
-{
+{	
+	/*1. 调用slab_alloc实现分配slab对象*/
 	void *ret = slab_alloc(cachep, lru, flags, cachep->object_size, _RET_IP_);
-
+	/*2. tracepoint挂载点*/
 	trace_kmem_cache_alloc(_RET_IP_, ret, cachep, flags, NUMA_NO_NODE);
 
 	return ret;
 }
 
+/*slab缓存对象的核心接口函数*/
 void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
 {
 	return __kmem_cache_alloc_lru(cachep, NULL, flags);
 }
+
 EXPORT_SYMBOL(kmem_cache_alloc);
 
 void *kmem_cache_alloc_lru(struct kmem_cache *cachep, struct list_lru *lru,
@@ -3549,12 +3746,15 @@ void __do_kmem_cache_free(struct kmem_cache *cachep, void *objp,
 			  unsigned long caller)
 {
 	unsigned long flags;
-
+	/*1. 关中断*/
 	local_irq_save(flags);
+	/*2. 调试检查*/
 	debug_check_no_locks_freed(objp, cachep->object_size);
 	if (!(cachep->flags & SLAB_DEBUG_OBJECTS))
 		debug_check_no_obj_freed(objp, cachep->object_size);
+	/*3. 执行实际释放*/
 	__cache_free(cachep, objp, caller);
+	/*4. 开中断*/
 	local_irq_restore(flags);
 }
 
@@ -3574,11 +3774,13 @@ void __kmem_cache_free(struct kmem_cache *cachep, void *objp,
  */
 void kmem_cache_free(struct kmem_cache *cachep, void *objp)
 {
+	/*1. 检查objp是否属于当前cachep，并返回正确的cachep*/
 	cachep = cache_from_obj(cachep, objp);
 	if (!cachep)
 		return;
-
+	/*2. tracepoint 预埋点 记录释放slab对象*/
 	trace_kmem_cache_free(_RET_IP_, objp, cachep);
+	/*3. 执行实际释放*/
 	__do_kmem_cache_free(cachep, objp, _RET_IP_);
 }
 EXPORT_SYMBOL(kmem_cache_free);

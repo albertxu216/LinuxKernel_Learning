@@ -3241,7 +3241,7 @@ get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
 {
 	struct zoneref *z;//当前正在处理的 zone 的引用
 	struct zone *zone;//当前正在处理的 zone
-	struct pglist_data *last_pgdat = NULL;//最近访问的 NUMA 节点数据
+	struct pglist_data *last_pgdat = NULL;//上次访问的节点
 	bool last_pgdat_dirty_ok = false;//最近访问节点是否可分配脏页
 	bool no_fallback;//是否避免碎片化的标志
 
@@ -3362,8 +3362,8 @@ retry:
 			}
 #endif
 			/*1.2.3 忽略水位限制:
-			 *      如果启用了ALLOC_NO_WATERMARKS标志，表示可以忽略所有水位线限制
-			 *      直接去try_this_zone 分配物理内存
+			 *      如果启用了ALLOC_NO_WATERMARKS标志，表示可以忽略所有线限制
+			 *      直接去try_this_zone 分配物理内存水位
 			 */
 			BUILD_BUG_ON(ALLOC_NO_WATERMARKS < NR_WMARK);
 			if (alloc_flags & ALLOC_NO_WATERMARKS)
@@ -3444,7 +3444,7 @@ try_this_zone:
 		/*禁止避免碎片化标志，重头尝试分配*/
 		alloc_flags &= ~ALLOC_NOFRAGMENT;
 		goto retry;
-	}
+	} 
 
 	return NULL;
 }

@@ -8,8 +8,9 @@
 /*
  * Definitions unique to the original Linux SLAB allocator.
  */
-
+/*每个slab描述符都由 kmem_cache 该数据结构表示*/
 struct kmem_cache {
+	/*1.每个CPU都有一个，表示本地对象缓冲池*/
 	struct array_cache __percpu *cpu_cache;
 
 /* 1) Cache tunables. Protected by slab_mutex */
