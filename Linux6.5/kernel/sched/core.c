@@ -1056,6 +1056,7 @@ void resched_curr(struct rq *rq)
 	cpu = cpu_of(rq);
 	if (cpu == smp_processor_id()) {
 		set_tsk_need_resched(curr);
+		/*设置内核的抢占标志位，允许调度器在下一次中断时触发任务切换*/
 		set_preempt_need_resched();
 		return;
 	}

@@ -642,6 +642,7 @@ static inline bool __entity_less(struct rb_node *a, const struct rb_node *b)
  */
 static void __enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
+	/*将一个调度实体插入红黑树*/
 	rb_add_cached(&se->run_node, &cfs_rq->tasks_timeline, __entity_less);
 }
 
@@ -4844,6 +4845,7 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 * If we're the current task, we must renormalise before calling
 	 * update_curr().
 	 */
+	/*对于不是*/
 	if (renorm && curr)
 		se->vruntime += cfs_rq->min_vruntime;/*计算当前调度实体的虚拟时间*/
 
@@ -5012,7 +5014,7 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 	s64 delta;
 
 	/*
-	 *1.当前进程实际运行的时间比预期时间长
+	 *1.当前进程实际运行的时间比预期时间长(调度周期算出预期的运行时间长)
 	 *1.1 通过sched_slice计算当前任务理想时间片长度，赋值给ideal_runtime；
 	 *1.2 检查进程运行时间 是否超出 预期运行时间
 	 */
@@ -12216,30 +12218,56 @@ static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
 static void task_fork_fair(struct task_struct *p)
 {
 	struct cfs_rq *cfs_rq;
+    /* 获取子进程对应的调度实体（sched_entity），调度实体是 CFS 中每个任务的基本调度单元 */
 	struct sched_entity *se = &p->se, *curr;
+	/* 获取当前运行队列（runqueue）的指针 */
 	struct rq *rq = this_rq();
 	struct rq_flags rf;
-
+	/* 锁定当前运行队列，防止其他CPU并发修改 */
 	rq_lock(rq, &rf);
+    /* 更新运行队列的时钟，以保证 vruntime 计算的准确性 */
 	update_rq_clock(rq);
 
+    /* 获取当前进程所属的 CFS 运行队列 */
 	cfs_rq = task_cfs_rq(current);
+	/* 获取当前在运行队列中正在运行的调度实体 */
 	curr = cfs_rq->curr;
 	if (curr) {
+        /*
+         * 如果当前队列中存在正在运行的任务，
+         * 更新该队列中的当前调度实体的状态，确保 vruntime 最新
+         */
 		update_curr(cfs_rq);
+        /* 将子进程的 vruntime 初始化为当前运行实体的 vruntime，
+         * 这样子进程初始时不会因为 vruntime 值太低而被优先调度
+         */
 		se->vruntime = curr->vruntime;
 	}
+
+    /* 将子进程的调度实体插入到 CFS 运行队列中，
+     * 参数 1 表示这是一个新的实体，可能需要重新平衡红黑树
+     */
 	place_entity(cfs_rq, se, 1);
 
+    /*
+     * 如果 sysctl_sched_child_runs_first 开启，
+     * 并且当前队列中有正在运行的任务，
+     * 并且根据调度策略子进程应该比当前任务先运行，
+     * 则交换二者的 vruntime 值，并触发重新调度。
+     */
 	if (sysctl_sched_child_runs_first && curr && entity_before(curr, se)) {
-		/*
-		 * Upon rescheduling, sched_class::put_prev_task() will place
-		 * 'current' within the tree based on its new key value.
-		 */
+        /*
+         * 当调度器重新选择任务时，sched_class::put_prev_task() 会根据新的 vruntime 值，
+         * 将 'current' 放置到合适的位置。
+         */
 		swap(curr->vruntime, se->vruntime);
+        /* 标记需要重新调度 */
 		resched_curr(rq);
 	}
 
+    /* 调整子进程 vruntime，将其相对于队列中的最小 vruntime 进行归一化，
+     * 以便后续 vruntime 比较更加合理
+     */
 	se->vruntime -= cfs_rq->min_vruntime;
 	rq_unlock(rq, &rf);
 }

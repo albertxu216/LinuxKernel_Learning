@@ -135,11 +135,12 @@ static inline void __raw_spin_lock(raw_spinlock_t *lock)
 }
 
 #endif /* !CONFIG_GENERIC_LOCKBREAK || CONFIG_DEBUG_LOCK_ALLOC */
-
+/*自旋锁释放时，会检查是否要抢占，是一个抢占时机*/
 static inline void __raw_spin_unlock(raw_spinlock_t *lock)
 {
 	spin_release(&lock->dep_map, _RET_IP_);
 	do_raw_spin_unlock(lock);
+	/*检查是否需要抢占，通过宏定义实现*/
 	preempt_enable();
 }
 

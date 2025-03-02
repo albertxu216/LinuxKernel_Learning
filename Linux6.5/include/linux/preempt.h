@@ -216,10 +216,19 @@ do { \
 #define preemptible()	(preempt_count() == 0 && !irqs_disabled())
 
 #ifdef CONFIG_PREEMPTION
+/*检查是否需要抢占，需要的话，通过__preempt_schedule()执行抢占操作
+ 
+ */
 #define preempt_enable() \
 do { \
 	barrier(); \
+	/*preempt_count_dec_and_test检查preempt_count标志位是否被置为0（即需要抢占）\
+	 *当前线程的抢占计数（preempt count）减一，并检查减一后的结果是否为零 \
+	 */
 	if (unlikely(preempt_count_dec_and_test())) \
+		/*__preempt_schedule()会检查是否有挂起的抢占请求（TIF_NEED_RESCHED 标志）并触发调度，
+		 *可能会导致当前线程主动让出 CPU，从而实现抢占
+		 */
 		__preempt_schedule(); \
 } while (0)
 
