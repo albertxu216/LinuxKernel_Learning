@@ -8,42 +8,69 @@
 /*
  * Definitions unique to the original Linux SLAB allocator.
  */
-/*每个slab描述符都由 kmem_cache 该数据结构表示*/
+/*每个slab缓存都由 kmem_cache 数据结构表示*/
 struct kmem_cache {
 	/*1.每个CPU都有一个，表示本地对象缓冲池*/
 	struct array_cache __percpu *cpu_cache;
 
 /* 1) Cache tunables. Protected by slab_mutex */
+
+	/*表示在当前 CPU 的本地对象缓冲池 array_cache 为空时，
+	 *从共享对象缓冲池或 slabs_partial/slabs_free 列表中迁移空闲对象的数目
+	 */
 	unsigned int batchcount;
+
+	/*当本地对象缓冲池中的空闲对象的数目大于 limit 时，
+	 *会主动释放 batchcount 个对象，便于内核回收和销毁 slab*/
 	unsigned int limit;
+
+	/**/
 	unsigned int shared;
 
+	/*对象的长度，这个长度要加上 align 对齐字节*/
 	unsigned int size;
 	struct reciprocal_value reciprocal_buffer_size;
 /* 2) touched by every alloc & free from the backend */
-
+	/*对象的分配掩码*/
 	slab_flags_t flags;		/* constant flags */
+	/*一个 slab 中最多有多少个对象*/
 	unsigned int num;		/* # of objs per slab */
 
 /* 3) cache_grow/shrink */
 	/* order of pgs per slab (2^n) */
+	/*一个slab分配器从伙伴系统申请多少个物理页面2^gfporder个*/
 	unsigned int gfporder;
 
 	/* force GFP flags, e.g. GFP_DMA */
 	gfp_t allocflags;
-
+	/*一个 slab 中可以有多少个不同的缓存行*/
 	size_t colour;			/* cache colouring range */
+	/*着色区的长度，和 L1 缓存行大小相同*/
 	unsigned int colour_off;	/* colour offset */
+	/*每个对象要占用 1 字节来存放 freelist*/
 	unsigned int freelist_size;
 
 	/* constructor func */
+	/*构造函数*/
 	void (*ctor)(void *obj);
 
 /* 4) cache creation/removal */
+	/*slab 描述符的名称*/
 	const char *name;
+
+	/*在slab_caches 链表中，该slab缓存用于找到前一个和后一个slab缓存*/
 	struct list_head list;
+
+	/*当前slab缓存被引用的次数，
+	 *当创建其他slab描述符并引用该slab描述符时，
+	 *会增加引用次数
+	 */
 	int refcount;
+
+	/*对象的实际大小*/
 	int object_size;
+
+	/*对齐的长度*/
 	int align;
 
 /* 5) statistics */
@@ -85,7 +112,7 @@ struct kmem_cache {
 	unsigned int useroffset;	/* Usercopy region offset */
 	unsigned int usersize;		/* Usercopy region size */
 #endif
-
+	/*NUMA系统中，每个节点下对应一个slab节点*/
 	struct kmem_cache_node *node[MAX_NUMNODES];
 };
 

@@ -2956,7 +2956,7 @@ static void *cache_alloc_refill(struct kmem_cache *cachep, gfp_t flags)
 	BUG_ON(ac->avail > 0 || !n);
 	shared = READ_ONCE(n->shared);//获取当前节点的共享对象缓存池 shared
 
-	/*1. 若共享缓存池为空、当前节点没有可用对象，则直接去扩展slab*/
+	/*1. 若共享缓存池为空、当前slab节点没有可用对象，则直接去扩展slab*/
 	if (!n->free_objects && (!shared || !shared->avail))
 		goto direct_grow;
 	/*2. 加锁保护 NUMA 节点的共享和 slab 数据结构*/
@@ -2974,14 +2974,14 @@ static void *cache_alloc_refill(struct kmem_cache *cachep, gfp_t flags)
 		goto alloc_done;	// 如果成功，从共享缓存补充完成，跳转至完成流程
 	}
 
-	/*4. 从 slab节点 迁移空闲对象 到 本地对象缓存池ac
+	/*4. 从 slab节点 中两个链表中 迁移空闲对象 到 本地对象缓存池ac
 	 *   如果共享对象缓存池中没有空闲对象；
 	 *   尝试从当前NUMA节点的 slab节点中 (slabs_partial , slabs_free 链表) 
 	 *   迁移 batchcount 个空闲对象到本地缓冲池；
 	*/
 	while (batchcount > 0) {
 		/* Get slab alloc is to come from. */
-		/*4.1 获取salb节点中第一个成员；
+		/*4.1 获取slab节点中第一个slab成员；
 		 *    查看 slabs_partial , slabs_free 链表
 		 *    返回该链表中第一个slab成员；
 		 *    若无slab可用，则跳转到 扩展slab 流程中；
@@ -3010,7 +3010,7 @@ direct_grow:
 	/*6. 本地缓存仍为空,扩展slab，即重新从伙伴系统申请物理内存分配到slab分配器
 	 *   a.共享对象缓存池没有空闲对象 及 b.slab节点没有空闲对象;
 	 *   说明当前NUMA节点没有slab空闲对象;
-	 *   只能重新分配slab分配器,这就是一开始初始化和配置slab描述符的情景;
+	 *   只能重新分配该类型的slab,这就是一开始初始化和配置slab描述符的情景;
 	 */
 	if (unlikely(!ac->avail)) {
 		/* Check if we can use obj in pfmemalloc slab */
@@ -3022,8 +3022,8 @@ direct_grow:
 				return obj;
 		}
 
-		/*6.2 扩展slab分配器(分配一个slab分配器),
-		 *    然后返回该slab分配器中第一个物理页面的page结构体指针
+		/*6.2 扩展slab(分配一个cachep类型的slab),
+		 *    然后返回该slab中第一个物理页面的page结构体指针
 		 */
 		slab = cache_grow_begin(cachep, gfp_exact_node(flags), node);
 

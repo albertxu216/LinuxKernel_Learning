@@ -43,16 +43,20 @@ struct slab {
 	unsigned long __page_flags;
 
 #if defined(CONFIG_SLAB)
-
+	/*1. 指向该slab分配器所属的slab缓存类型*/
 	struct kmem_cache *slab_cache;
 	union {
 		struct {
+			/*2. 维护在slab节点下的三个slab链表*/
 			struct list_head slab_list;
+			/*3. 指向当前slab分配器的管理区*/
 			void *freelist;	/* array of free object indexes */
+			/*4. 当前slab分配器下的第一个对象*/
 			void *s_mem;	/* first object */
 		};
 		struct rcu_head rcu_head;
 	};
+	/*5. 当前slab分配器中 活跃的对象*/
 	unsigned int active;
 
 #elif defined(CONFIG_SLUB)
@@ -775,18 +779,47 @@ static inline void slab_post_alloc_hook(struct kmem_cache *s,
  */
 struct kmem_cache_node {
 #ifdef CONFIG_SLAB
+	/*1. 用于保护 slab 节点中的 slab 链表*/
 	raw_spinlock_t list_lock;
+
+	/*2.  slab节点的三个链表*/
+	/*2.1 slab 链表，表示 slab 节点中有部分空闲对象*/
 	struct list_head slabs_partial;	/* partial list first, better asm code */
+	/*2.2 slab 链表，表示 slab 节点中没有空闲对象*/
 	struct list_head slabs_full;
+	/*2.3 slab 链表，表示 slab 节点中全部都是空闲对象*/
 	struct list_head slabs_free;
+
+	/*3. 表示 slab 节点中有多少个 slab */
 	unsigned long total_slabs;	/* length of all slab lists */
+
+	/*4. 表示 slab 节点中有多少全是空闲对象的空闲 slab*/
 	unsigned long free_slabs;	/* length of free slab list only */
+
+	/*5. 表示 slab 节点中有多少个空闲对象*/
 	unsigned long free_objects;
+
+	/*6. 表示 slab 节点中所有空闲对象的最大阈值，
+	 *   即 slab 节点中可容许的空闲对象数目最大阈值
+	 */
 	unsigned int free_limit;
+
+	/*7. 记录当前着色区的编号。
+	 *   所有 slab 节点都按照着色编号来计算着色区的大小，
+	 *   达到最大值后又从 0 开始计算
+	 */
 	unsigned int colour_next;	/* Per-node cache coloring */
+
+	/*8. 当前节点中的 共享对象缓存池
+	 *   在多核 CPU 中，除了本地 CPU 外，
+	 *   slab 节点中还有一个当前节点下所有 CPU 都共享的对象缓冲区；
+	 */
 	struct array_cache *shared;	/* shared per node */
+	/*用于NUMA系统*/
 	struct alien_cache **alien;	/* on other nodes */
+	/*下一次收割 slab 节点的时间*/
 	unsigned long next_reap;	/* updated without locking */
+	/*表示访问了 slabs_free 的 slab 节点*/
 	int free_touched;		/* updated without locking */
 #endif
 
