@@ -16,6 +16,7 @@ struct coredump_params;
  * This structure is used to hold the arguments that are used when loading binaries.
  */
 struct linux_binprm {
+
 #ifdef CONFIG_MMU
 	struct vm_area_struct *vma;
 	unsigned long vma_pages;
@@ -23,7 +24,9 @@ struct linux_binprm {
 # define MAX_ARG_PAGES	32
 	struct page *page[MAX_ARG_PAGES];
 #endif
+	/*2. 进程地址空间*/
 	struct mm_struct *mm;
+	/*3.当前栈所在位置*/
 	unsigned long p; /* current top of mem */
 	unsigned long argmin; /* rlimit marker for copy_strings() */
 	unsigned int
@@ -76,15 +79,23 @@ struct linux_binprm {
 #define BINPRM_FLAGS_PRESERVE_ARGV0 (1 << BINPRM_FLAGS_PRESERVE_ARGV0_BIT)
 
 /*
- * This structure defines the functions that are used to load the binary formats that
- * linux accepts.
+ * 定义 Linux 内核中的二进制格式加载器
  */
 struct linux_binfmt {
+	/*位于linux加载器链表的位置*/
 	struct list_head lh;
+
+	/*指向加载该 binfmt 处理器的内核模块，
+	 *如果该加载器是通过内核模块（如 binfmt_misc）动态加载的，
+	 *则这个字段指向其对应的 struct module 结构体
+	 */
 	struct module *module;
+	/*负责加载可执行文件的核心函数，每个 binfmt 需要实现这个回调函数*/
 	int (*load_binary)(struct linux_binprm *);
+	/*处理共享库（Shared Library）的加载，适用于动态链接库的格式加载器（如 ELF）*/
 	int (*load_shlib)(struct file *);
 #ifdef CONFIG_COREDUMP
+	/*负责生成 core dump（核心转储）文件，即程序崩溃时的调试信息*/
 	int (*core_dump)(struct coredump_params *cprm);
 	unsigned long min_coredump;	/* minimal dump size */
 #endif

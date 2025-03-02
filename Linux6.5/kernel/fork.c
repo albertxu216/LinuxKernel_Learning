@@ -1250,12 +1250,12 @@ static void mm_init_uprobes_state(struct mm_struct *mm)
 	mm->uprobes_state.xol_area = NULL;
 #endif
 }
-
+/*初始化mm_struct结构体*/
 static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	struct user_namespace *user_ns)
 {
 	int i;
-
+	/*1. 初始化基本数据结构*/
 	mt_init_flags(&mm->mm_mt, MM_MT_FLAGS);
 	mt_set_external_lock(&mm->mm_mt, &mm->mmap_lock);
 	atomic_set(&mm->mm_users, 1);
@@ -1273,6 +1273,8 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	memset(&mm->rss_stat, 0, sizeof(mm->rss_stat));
 	spin_lock_init(&mm->page_table_lock);
 	spin_lock_init(&mm->arg_lock);
+
+	/*2. 初始化CPU相关信息*/
 	mm_init_cpumask(mm);
 	mm_init_aio(mm);
 	mm_init_owner(mm, p);
@@ -1286,6 +1288,7 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 	mm_init_uprobes_state(mm);
 	hugetlb_count_init(mm);
 
+	/*3. 继承当前进程的flags*/
 	if (current->mm) {
 		mm->flags = current->mm->flags & MMF_INIT_MASK;
 		mm->def_flags = current->mm->def_flags & VM_INIT_DEF_MASK;
@@ -1293,20 +1296,26 @@ static struct mm_struct *mm_init(struct mm_struct *mm, struct task_struct *p,
 		mm->flags = default_dump_filter;
 		mm->def_flags = 0;
 	}
-
+	/*4. 分配pgd页表*/
 	if (mm_alloc_pgd(mm))
 		goto fail_nopgd;
 
+	/*5. CPU 架构相关初始化*/
 	if (init_new_context(p, mm))
 		goto fail_nocontext;
 
+	/*6. 为进程分配 Context ID，
+	 *   用于进程 TLB 识别
+	 */
 	if (mm_alloc_cid(mm))
 		goto fail_cid;
 
+	/*7. 初始化 rss_stat*/
 	for (i = 0; i < NR_MM_COUNTERS; i++)
 		if (percpu_counter_init(&mm->rss_stat[i], 0, GFP_KERNEL_ACCOUNT))
 			goto fail_pcpu;
 
+	/*8. 设置 user_namespace*/
 	mm->user_ns = get_user_ns(user_ns);
 	lru_gen_init_mm(mm);
 	return mm;
@@ -1325,17 +1334,20 @@ fail_nopgd:
 }
 
 /*
- * Allocate and initialize an mm_struct.
+ * 申请并初始化一个 mm_struct.
  */
 struct mm_struct *mm_alloc(void)
 {
 	struct mm_struct *mm;
-
+	/*1. 从slab中为mm_struct申请地址空间*/
 	mm = allocate_mm();
 	if (!mm)
 		return NULL;
 
+	/*2. 全部填充为0*/
 	memset(mm, 0, sizeof(*mm));
+
+	/*3.初始化mm_struct*/
 	return mm_init(mm, current, current_user_ns());
 }
 
