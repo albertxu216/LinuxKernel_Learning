@@ -1055,6 +1055,7 @@ void resched_curr(struct rq *rq)
 	 */
 	cpu = cpu_of(rq);
 	if (cpu == smp_processor_id()) {
+		/*设置当前进程需要抢占*/
 		set_tsk_need_resched(curr);
 		/*设置内核的抢占标志位，允许调度器在下一次中断时触发任务切换*/
 		set_preempt_need_resched();
@@ -2224,12 +2225,8 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 		/*若新进程所属调度类优于当前运行队列调度类，则调用resched_curr强制重新调度*/
 		resched_curr(rq);
 
-	/*
-	 * A queue event has occurred, and we're going to schedule.  In
-	 * this case, we can save a useless back to back clock update.
-	 */
-	/*如果当前任务已经被标记为需要重新调度，
-	 *并且还在运行队列中，那么可以跳过不必要的时钟更新操作
+	/*2. 如果当前任务已经被标记为需要重新调度，
+	 *   并且还在运行队列中，那么可以跳过不必要的时钟更新操作
 	 */
 	if (task_on_rq_queued(rq->curr) && test_tsk_need_resched(rq->curr))
 		rq_clock_skip_update(rq);
@@ -3639,20 +3636,22 @@ int select_task_rq(struct task_struct *p, int cpu, int wake_flags)
 {
 	lockdep_assert_held(&p->pi_lock);
 
+	/*
+	 * 如果任务允许运行在多个 CPU 上（nr_cpus_allowed > 1），
+	 * 且任务允许迁移（!is_migration_disabled(p)），则调用任务所属调度类的
+	 * select_task_rq 方法来选择合适的 CPU。
+	 * 否则（任务仅允许在单个 CPU 上运行或迁移被禁用），直接从任务允许的 CPU 掩码中选择任意一个 CPU。
+	 */
 	if (p->nr_cpus_allowed > 1 && !is_migration_disabled(p))
 		cpu = p->sched_class->select_task_rq(p, cpu, wake_flags);
 	else
 		cpu = cpumask_any(p->cpus_ptr);
 
 	/*
-	 * In order not to call set_task_cpu() on a blocking task we need
-	 * to rely on ttwu() to place the task on a valid ->cpus_ptr
-	 * CPU.
-	 *
-	 * Since this is common to all placement strategies, this lives here.
-	 *
-	 * [ this allows ->select_task() to simply return task_cpu(p) and
-	 *   not worry about this generic constraint ]
+	 * 如果任务允许运行在多个 CPU 上（nr_cpus_allowed > 1），
+	 * 且任务允许迁移（!is_migration_disabled(p)），则调用任务所属调度类的
+	 * select_task_rq 方法来选择合适的 CPU。
+	 * 否则（任务仅允许在单个 CPU 上运行或迁移被禁用），直接从任务允许的 CPU 掩码中选择任意一个 CPU。
 	 */
 	if (unlikely(!is_cpu_allowed(p, cpu)))
 		cpu = select_fallback_rq(task_cpu(p), p);
@@ -3771,6 +3770,7 @@ ttwu_stat(struct task_struct *p, int cpu, int wake_flags)
  */
 static inline void ttwu_do_wakeup(struct task_struct *p)
 {
+	/*改变进程状态为运行态*/
 	WRITE_ONCE(p->__state, TASK_RUNNING);
 	trace_sched_wakeup(p);
 }
@@ -3795,8 +3795,9 @@ ttwu_do_activate(struct rq *rq, struct task_struct *p, int wake_flags,
 		delayacct_blkio_end(p);
 		atomic_dec(&task_rq(p)->nr_iowait);
 	}
-
+	/*将目标进程放到对应的运行队列中*/
 	activate_task(rq, p, en_flags);
+	/*查看是否需要抢占,若需要则直接抢占*/
 	check_preempt_curr(rq, p, wake_flags);
 
 	ttwu_do_wakeup(p);
@@ -4046,6 +4047,7 @@ static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)
 
 	rq_lock(rq, &rf);
 	update_rq_clock(rq);
+	/*将进程放到目标运行队列中*/
 	ttwu_do_activate(rq, p, wake_flags, &rf);
 	rq_unlock(rq, &rf);
 }
@@ -4364,7 +4366,7 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 #else
 	cpu = task_cpu(p);
 #endif /* CONFIG_SMP */
-
+	/*把进程放到选择的运行队列上*/
 	ttwu_queue(p, cpu, wake_flags);
 unlock:
 	raw_spin_unlock_irqrestore(&p->pi_lock, flags);
@@ -4509,21 +4511,23 @@ int wake_up_state(struct task_struct *p, unsigned int state)
 }
 
 /*
- * Perform scheduler related setup for a newly forked process p.
- * p is forked by current.
+ * 为新fork出来的进程 p 进行与调度器相关的初始化设置。
+ * 该进程由当前进程 fork 出来。
  *
- * __sched_fork() is basic setup used by init_idle() too:
+ * __sched_fork() 同时也用于 init_idle() 的基本调度初始化工作。
  */
 static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 {
-	p->on_rq			= 0;
-
+	/*1. 初始化task_struct中与调度相关的字段*/
+	p->on_rq			= 0;//未上就绪队列
+	
 	p->se.on_rq			= 0;
 	p->se.exec_start		= 0;
 	p->se.sum_exec_runtime		= 0;
 	p->se.prev_sum_exec_runtime	= 0;
 	p->se.nr_migrations		= 0;
 	p->se.vruntime			= 0;
+	/*2. 初始化调度实体所属组节点链表头*/
 	INIT_LIST_HEAD(&p->se.group_node);
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
@@ -4535,11 +4539,13 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	memset(&p->stats, 0, sizeof(p->stats));
 #endif
 
-	RB_CLEAR_NODE(&p->dl.rb_node);
-	init_dl_task_timer(&p->dl);
-	init_dl_inactive_task_timer(&p->dl);
-	__dl_clear_params(p);
+	/*3. deadline 调度器 初始化*/
+	RB_CLEAR_NODE(&p->dl.rb_node);			//清除 deadline 调度器红黑树节点状态
+	init_dl_task_timer(&p->dl);				//初始化 deadline 调度器任务定时器
+	init_dl_inactive_task_timer(&p->dl);	//初始化 deadline 调度器非活跃任务定时器
+	__dl_clear_params(p);					// 清除 deadline 调度器相关参数
 
+	/*4. 初始化实时调度（rt）相关字段*/
 	INIT_LIST_HEAD(&p->rt.run_list);
 	p->rt.timeout		= 0;
 	p->rt.time_slice	= sched_rr_timeslice;
@@ -4547,17 +4553,20 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->rt.on_list		= 0;
 
 #ifdef CONFIG_PREEMPT_NOTIFIERS
+	/*如果启用抢占通知，初始化抢占通知链表头*/
 	INIT_HLIST_HEAD(&p->preempt_notifiers);
 #endif
 
 #ifdef CONFIG_COMPACTION
-	p->capture_control = NULL;
+	p->capture_control = NULL;//如果启用内存紧缩，初始化该任务的捕获控制指针为空
 #endif
 	init_numa_balancing(clone_flags, p);
 #ifdef CONFIG_SMP
+	/*在 SMP 配置下，设置 wake_entry 的标志，表示任务正在等待唤醒*/
 	p->wake_entry.u_flags = CSD_TYPE_TTWU;
 	p->migration_pending = NULL;
 #endif
+	/*初始化调度器内存管理控制（如控制组ID等）*/
 	init_sched_mm_cid(p);
 }
 
@@ -4750,32 +4759,39 @@ late_initcall(sched_core_sysctl_init);
 int sched_fork(unsigned long clone_flags, struct task_struct *p)
 {	/*1.初始化调度相关结构体*/
 	__sched_fork(clone_flags, p);
-	/*
-	 * 我们在这里将进程标记为NEW，这保证了没有人会真正运行它，
-	 * 而且信号或其他外部事件也不能唤醒它并将其插入到 runqueue 中。
-	 */
-	/*2.将新进程的状态改为TASK_NEW*/
-	p->__state = TASK_NEW;
 
 	/*
-	 * Make sure we do not leak PI boosting priority to the child.
+	 *2. 将新进程标记为 TASK_NEW。
+	 *   这样做保证了该进程在真正运行前不会被调度，
+	 *   同时防止信号或其他外部事件唤醒它并将其插入到运行队列中。
+	 */
+	p->__state = TASK_NEW;
+
+	/*3. 重置进程优先级
+	 *   为了防止将 PI（优先级继承）提升的优先级遗留给子进程，
+	 *   在 fork 后将子进程的 prio 设置为当前进程的 normal_prio。
 	 */
 	p->prio = current->normal_prio;
 
-	uclamp_fork(p);
+	uclamp_fork(p);//为子进程设置用户态限制（uclamp）相关参数
 
-	/*
-	 * Revert to default priority/policy on fork if requested.
-	 */
+
+	/*4. 如果请求在 fork 时恢复到默认的优先级/策略，则进行相关重置：*/
 	if (unlikely(p->sched_reset_on_fork)) {
+		/*
+		 * 如果子进程采用 deadline 或实时调度策略，
+		 * 则恢复为 SCHED_NORMAL 策略，并将静态优先级和实时优先级重置。
+		 */
 		if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
 			p->policy = SCHED_NORMAL;
 			p->static_prio = NICE_TO_PRIO(0);
 			p->rt_priority = 0;
 		} else if (PRIO_TO_NICE(p->static_prio) < 0)
+			/* 如果当前静态优先级对应的 nice 值小于 0，则重置为默认值 */
 			p->static_prio = NICE_TO_PRIO(0);
-
+		/* 同步更新 p->prio 与 p->normal_prio，使其等于静态优先级 */
 		p->prio = p->normal_prio = p->static_prio;
+		/* 更新任务的负载权重 */
 		set_load_weight(p, false);
 
 		/*
@@ -4785,13 +4801,19 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 		p->sched_reset_on_fork = 0;
 	}
 
+	/*
+	 *5. 根据新进程的优先级选择相应的调度类：
+	 *   如果是 deadline 优先级，则返回 -EAGAIN（表示 fork 失败或需要重试）；
+	 *   如果是实时优先级，则设置为实时调度类；
+	 *   否则，设置为公平调度类。
+	 */
 	if (dl_prio(p->prio))
 		return -EAGAIN;
 	else if (rt_prio(p->prio))
 		p->sched_class = &rt_sched_class;
 	else
 		p->sched_class = &fair_sched_class;
-
+	/* 初始化该进程调度实体的平均可运行性数据 */
 	init_entity_runnable_average(&p->se);
 
 
@@ -4802,6 +4824,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 #if defined(CONFIG_SMP)
 	p->on_cpu = 0;
 #endif
+	/*6. 初始化任务的抢占计数器 */
 	init_task_preempt_count(p);
 #ifdef CONFIG_SMP
 	plist_node_init(&p->pushable_tasks, MAX_PRIO);
@@ -6810,15 +6833,24 @@ static void sched_update_worker(struct task_struct *tsk)
 
 asmlinkage __visible void __sched schedule(void)
 {
-	struct task_struct *tsk = current;
+    /*1. 获取当前任务的指针*/
+    struct task_struct *tsk = current;
 
-	sched_submit_work(tsk);
-	do {
-		preempt_disable();
-		__schedule(SM_NONE);
-		sched_preempt_enable_no_resched();
-	} while (need_resched());
-	sched_update_worker(tsk);
+    /*2. 提交调度工作给内核*/
+    sched_submit_work(tsk);
+    
+    /*3. 进入调度循环，直到不再需要调度 */
+    do {
+        /*3.1 禁用抢占 */
+        preempt_disable();
+        /*3.2 执行调度 */
+        __schedule(false);
+        /*3.3 启用抢占但不重新调度*/
+        sched_preempt_enable_no_resched();
+    } while (need_resched()); // 如果需要重新调度，则继续循环
+
+    /*4. 更新工作线程*/
+    sched_update_worker(tsk);
 }
 EXPORT_SYMBOL(schedule);
 
@@ -7231,44 +7263,62 @@ static inline int rt_effective_prio(struct task_struct *p, int prio)
 }
 #endif
 
+/*更改进程nice值，调整优先级*/
 void set_user_nice(struct task_struct *p, long nice)
 {
 	bool queued, running;
 	int old_prio;
 	struct rq_flags rf;
 	struct rq *rq;
-
+	/*1. nice值正确性判断;
+	 *   如果新nice值与当前任务的nice值相同，或者超出系统允许的范围，则直接返回
+	 */
 	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE)
 		return;
 	/*
-	 * We have to be careful, if called from sys_setpriority(),
-	 * the task might be in the middle of scheduling on another CPU.
+	 * 注意：当该函数被sys_setpriority()调用时，
+	 * 任务可能正在另一CPU上处于调度过程中，
+	 * 因此必须先锁定任务所在的运行队列以保证数据一致性。
 	 */
+	/*2. 锁定任务所在的运行队列，并获得锁的上下文信息*/
 	rq = task_rq_lock(p, &rf);
+	/*更新运行队列的时钟，确保调度相关时间信息准确*/
 	update_rq_clock(rq);
 
+
 	/*
-	 * The RT priorities are set via sched_setscheduler(), but we still
-	 * allow the 'normal' nice value to be set - but as expected
-	 * it won't have any effect on scheduling until the task is
-	 * SCHED_DEADLINE, SCHED_FIFO or SCHED_RR:
+	 * 对于实时调度策略（如SCHED_DEADLINE、SCHED_FIFO或SCHED_RR），
+	 * 优先级是通过sched_setscheduler设置的，尽管允许设置nice值，
+	 * 但其不会对调度产生实际影响。
 	 */
+	/*3. 如果任务采用了deadline或实时调度策略，则只更新静态优先级后直接跳转到解锁步骤*/
 	if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
 		p->static_prio = NICE_TO_PRIO(nice);
 		goto out_unlock;
 	}
-	queued = task_on_rq_queued(p);
-	running = task_current(rq, p);
+
+	queued = task_on_rq_queued(p);//检查任务是否已经在运行队列中（排队状态）
+	running = task_current(rq, p);//检查任务是否当前正在运行
+
+	/*4. 如果任务在运行队列中，
+	 *   则先将其从队列中移除，保存状态并避免更新运行队列时钟
+	 */
 	if (queued)
 		dequeue_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
 	if (running)
 		put_prev_task(rq, p);
 
+	/*5. 根据nice值计算并更新相关内容
+	 *   其优先级 static_prio
+	 *   任务的负载权重
+	 *   新任务的有效优先级
+	 */
 	p->static_prio = NICE_TO_PRIO(nice);
 	set_load_weight(p, true);
 	old_prio = p->prio;
 	p->prio = effective_prio(p);
 
+	/*6. 如果任务之前在运行队列中，则重新入队以恢复调度状态*/
 	if (queued)
 		enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
 	if (running)
@@ -7278,6 +7328,7 @@ void set_user_nice(struct task_struct *p, long nice)
 	 * If the task increased its priority or is running and
 	 * lowered its priority, then reschedule its CPU:
 	 */
+	/*7. 调用所属调度类下的 prio_changed函数进行*/
 	p->sched_class->prio_changed(rq, p, old_prio);
 
 out_unlock:
@@ -7314,12 +7365,12 @@ int can_nice(const struct task_struct *p, const int nice)
 #ifdef __ARCH_WANT_SYS_NICE
 
 /*
- * sys_nice - change the priority of the current process.
- * @increment: priority increment
+ * sys_nice - 修改当前进程的优先级（nice值）。
+ * @increment: 表示nice值的变化增量（可正可负）。
  *
- * sys_setpriority is a more generic, but much slower function that
- * does similar things.
+ * sys_setpriority 是一个更通用但效率较低的函数，其功能与本函数类似。
  */
+/* nice系统调用入口 */
 SYSCALL_DEFINE1(nice, int, increment)
 {
 	long nice, retval;
@@ -7329,9 +7380,12 @@ SYSCALL_DEFINE1(nice, int, increment)
 	 * We don't have to worry. Conceptually one call occurs first
 	 * and we have a single winner.
 	 */
+	/*1. 计算新nice值，并限制在允许范围内*/
+	/*将传入的increment限制在[-NICE_WIDTH, NICE_WIDTH]之间，防止越界*/
 	increment = clamp(increment, -NICE_WIDTH, NICE_WIDTH);
+	/*根据当前进程的nice值加上增量，计算出新的nice值*/
 	nice = task_nice(current) + increment;
-
+	/*将计算后的nice值限制在系统允许的范围内 [MIN_NICE, MAX_NICE]*/
 	nice = clamp_val(nice, MIN_NICE, MAX_NICE);
 	if (increment < 0 && !can_nice(current, nice))
 		return -EPERM;
@@ -7340,6 +7394,7 @@ SYSCALL_DEFINE1(nice, int, increment)
 	if (retval)
 		return retval;
 
+	/*2. 设置当前进程的nice值为新计算的值*/
 	set_user_nice(current, nice);
 	return 0;
 }
@@ -8559,23 +8614,40 @@ SYSCALL_DEFINE3(sched_getaffinity, pid_t, pid, unsigned int, len,
 	return ret;
 }
 
+/*调用schedule()进行进程切换*/
 static void do_sched_yield(void)
 {
-	struct rq_flags rf;
-	struct rq *rq;
+    struct rq_flags rf;     // 定义一个 rq_flags 结构体变量，用于保存运行队列锁的状态标志
+    struct rq *rq;          // 定义指向当前 CPU 运行队列（runqueue）的指针
 
-	rq = this_rq_lock_irq(&rf);
+	/*1. 获取当前 CPU 的运行队列并加锁，同时禁用中断*/
+    rq = this_rq_lock_irq(&rf);
 
-	schedstat_inc(rq->yld_count);
-	current->sched_class->yield_task(rq);
+    /*增加运行队列的 yield 计数器，用于调度统计
+	 *schedstat_inc 是一个宏，用于更新调度器的统计数据
+	 */
+    schedstat_inc(rq->yld_count);
 
-	preempt_disable();
-	rq_unlock_irq(rq, &rf);
-	sched_preempt_enable_no_resched();
+    /*2. 调用当前任务的调度类（sched_class）中的 yield_task 方法
+	 *   将当前任务移到运行队列的末尾
+	 */ 
+    current->sched_class->yield_task(rq);
 
-	schedule();
+    /*3. 禁用抢占，确保接下来的解锁和调度操作不被中断*/
+    preempt_disable();
+
+    /*解锁运行队列并恢复中断状态*/
+    rq_unlock_irq(rq, &rf);
+
+    /*4. 启用抢占，但不立即触发重新调度
+	 *   sched_preempt_enable_no_resched 是 preempt_enable 的变种，
+	 *   避免立刻调用 schedule()
+	 */
+    sched_preempt_enable_no_resched();
+
+	/*5. 调用调度器，触发任务切换*/
+    schedule();
 }
-
 /**
  * sys_sched_yield - yield the current processor to other threads.
  *

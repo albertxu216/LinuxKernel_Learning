@@ -4748,14 +4748,25 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 	u64 vruntime = cfs_rq->min_vruntime;
 
 	/*
-	 * The 'current' period is already promised to the current tasks,
-	 * however the extra weight of the new task will slow them down a
-	 * little, place the new task so that it fits in the slot that
-	 * stays open at the end.
+	 * 当一个新任务被加入到调度队列中时，
+	 * 当前调度周期的时间已经分配给了当前正在运行的任务。
+	 * 新任务的加入会增加调度队列的总权重，从而影响当前任务的运行时间。
+	 * 为了尽量减少对当前任务的影响，新任务会被放置在当前调度周期末尾的空闲时间槽中。
+	 * 这样做可以确保当前任务能够尽可能地完成其预定的运行时间，而新任务则在剩余的时间内运行
+	 */
+
+	/*1. 处理新任务
+	 *   通过 sched_vslice(cfs_rq, se) 计算调度实体在一个调度周期内应得的虚拟时间片；
+	 *   将这个时间片加到 vruntime 上
 	 */
 	if (initial && sched_feat(START_DEBIT))
 		vruntime += sched_vslice(cfs_rq, se);
 
+	/*2. 处理唤醒任务
+	 *   通过降低 vruntime，给唤醒任务适度优先级，
+	 *   使其更快获得 CPU 执行机会
+	 *   设计思想是“睡眠时间不超过一个调度延迟的不予过度惩罚”
+	 */
 	/* sleeps up to a single latency don't count. */
 	if (!initial) {
 		unsigned long thresh;
@@ -4794,7 +4805,10 @@ place_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int initial)
 	 *     2^63 / scale_load_down(NICE_0_LOAD) ~ 104 days
 	 * should be safe.
 	 */
-	/*如果被唤醒的进程睡眠很长时间，则将当前运行队列最小虚拟时间给她*/
+	/*3. 处理长时间睡眠的进程
+	 *   如果被唤醒的进程睡眠很长时间，
+	 *   则将当前运行队列最小虚拟时间给她
+	 */
 	if (entity_is_long_sleeper(se))
 		se->vruntime = vruntime;
 	else
@@ -4838,6 +4852,7 @@ static inline bool cfs_bandwidth_used(void);
 static void
 enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 {
+	/*迁移进程或非唤醒进程，需要重新计算虚拟运行时间*/
 	bool renorm = !(flags & ENQUEUE_WAKEUP) || (flags & ENQUEUE_MIGRATED);
 	bool curr = cfs_rq->curr == se;
 
@@ -4845,10 +4860,14 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 * If we're the current task, we must renormalise before calling
 	 * update_curr().
 	 */
-	/*对于不是*/
+
+	/*1. 如果当前进程正在运行 且 需要调整虚拟时间
+	 *   则在原本虚拟时间的基础上 增加最小虚拟时间；
+	 */
 	if (renorm && curr)
 		se->vruntime += cfs_rq->min_vruntime;/*计算当前调度实体的虚拟时间*/
 
+	/*2. 更新运行队列的当前时间*/
 	update_curr(cfs_rq);
 
 	/*
@@ -4856,6 +4875,9 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 * moment in time, instead of some random moment in the past. Being
 	 * placed in the past could significantly boost this task to the
 	 * fairness detriment of existing tasks.
+	 */
+	/*3. 如果该进程是迁移进程或非唤醒进程，且未在运行
+	 *   则重新计算虚拟时间
 	 */
 	if (renorm && !curr)
 		se->vruntime += cfs_rq->min_vruntime;
@@ -4869,21 +4891,28 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	 *     its group cfs_rq
 	 *   - Add its new weight to cfs_rq->load.weight
 	 */
-	/*更新负载平均值*/
+	/*4. 更新负载及权重*/
 	update_load_avg(cfs_rq, se, UPDATE_TG | DO_ATTACH);
 	se_update_runnable(se);
 	update_cfs_group(se);
 	account_entity_enqueue(cfs_rq, se);
-	/*对醒来后的进程的虚拟时间做调整*/
+	/*5. 处理唤醒进程
+	 *   对唤醒进程的虚拟时间做调整；
+	 *   具体做法见place_entity
+	 */
 	if (flags & ENQUEUE_WAKEUP)
 		place_entity(cfs_rq, se, 0);/*虚拟时间做调整*/
 	/* Entity has migrated, no longer consider this task hot */
+	/*6. 处理迁移进程
+	 *   任务开始执行的时间戳归零
+	 */
 	if (flags & ENQUEUE_MIGRATED)
 		se->exec_start = 0;
 
 	check_schedstat_required();
 	update_stats_enqueue_fair(cfs_rq, se, flags);
 	check_spread(cfs_rq, se);
+	/*7. 将实体加入就绪队列红黑树*/
 	if (!curr)
 		__enqueue_entity(cfs_rq, se);/*最终插入红黑树*/
 	se->on_rq = 1;
@@ -5151,7 +5180,7 @@ pick_next_entity(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 		se = cfs_rq->last;
 	}
 
-	return se;
+	return se; 
 }
 
 static bool check_cfs_rq_runtime(struct cfs_rq *cfs_rq);
@@ -7743,79 +7772,89 @@ unlock:
 }
 
 /*
- * select_task_rq_fair: Select target runqueue for the waking task in domains
- * that have the relevant SD flag set. In practice, this is SD_BALANCE_WAKE,
- * SD_BALANCE_FORK, or SD_BALANCE_EXEC.
+ * select_task_rq_fair: 为唤醒的任务选择目标运行队列，适用于设置了相关 SD 标志的调度域。
+ * 在实践中，这些标志通常是 SD_BALANCE_WAKE、SD_BALANCE_FORK 或 SD_BALANCE_EXEC。
  *
- * Balances load by selecting the idlest CPU in the idlest group, or under
- * certain conditions an idle sibling CPU if the domain has SD_WAKE_AFFINE set.
+ * 通过选择最空闲组中的最空闲 CPU 来平衡负载，或者在特定条件下，如果调度域设置了
+ * SD_WAKE_AFFINE 标志，则选择一个空闲的兄弟 CPU。
  *
- * Returns the target CPU number.
+ * 返回目标 CPU 的编号。
  */
 static int
 select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)
 {
-	int sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
-	struct sched_domain *tmp, *sd = NULL;
-	int cpu = smp_processor_id();
-	int new_cpu = prev_cpu;
-	int want_affine = 0;
-	/* SD_flags and WF_flags share the first nibble */
-	int sd_flag = wake_flags & 0xF;
+    // 检查是否是同步唤醒，并且当前进程不是正在退出
+    int sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
+    struct sched_domain *tmp, *sd = NULL;  // sd 用于记录匹配的调度域，初始为 NULL
+    int cpu = smp_processor_id();          // 获取当前 CPU 的 ID
+    int new_cpu = prev_cpu;                // 默认目标 CPU 为之前的 CPU
+    int want_affine = 0;                   // 是否考虑唤醒亲和性的标志
+    /* SD_flags 和 WF_flags 共享低 4 位 */
+    int sd_flag = wake_flags & 0xF;        // 从 wake_flags 中提取调度域标志
 
-	/*
-	 * required for stable ->cpus_allowed
-	 */
-	lockdep_assert_held(&p->pi_lock);
-	if (wake_flags & WF_TTWU) {
-		record_wakee(p);
+    /*
+     * 确保任务的 cpus_allowed 在函数执行期间稳定，要求持有 pi_lock
+     */
+    lockdep_assert_held(&p->pi_lock);
 
-		if (sched_energy_enabled()) {
-			new_cpu = find_energy_efficient_cpu(p, prev_cpu);
-			if (new_cpu >= 0)
-				return new_cpu;
-			new_cpu = prev_cpu;
-		}
+    // 如果是任务唤醒事件 (WF_TTWU)
+    if (wake_flags & WF_TTWU) {
+        record_wakee(p);  // 记录被唤醒的任务
 
-		want_affine = !wake_wide(p) && cpumask_test_cpu(cpu, p->cpus_ptr);
-	}
+        // 关键步骤 1：能效感知选择 CPU
+        // 如果启用了调度能量感知，尝试选择一个能效更高的 CPU
+        if (sched_energy_enabled()) {
+            new_cpu = find_energy_efficient_cpu(p, prev_cpu);
+            if (new_cpu >= 0)
+                return new_cpu;  // 成功找到能效 CPU，直接返回
+            new_cpu = prev_cpu;  // 否则恢复为 prev_cpu
+        }
 
-	rcu_read_lock();
-	for_each_domain(cpu, tmp) {
-		/*
-		 * If both 'cpu' and 'prev_cpu' are part of this domain,
-		 * cpu is a valid SD_WAKE_AFFINE target.
-		 */
-		if (want_affine && (tmp->flags & SD_WAKE_AFFINE) &&
-		    cpumask_test_cpu(prev_cpu, sched_domain_span(tmp))) {
-			if (cpu != prev_cpu)
-				new_cpu = wake_affine(tmp, p, cpu, prev_cpu, sync);
+        // 设置唤醒亲和性标志：任务不倾向于广泛唤醒，且当前 CPU 在任务允许的 CPU 集合中
+        want_affine = !wake_wide(p) && cpumask_test_cpu(cpu, p->cpus_ptr);
+    }
 
-			sd = NULL; /* Prefer wake_affine over balance flags */
-			break;
-		}
+    // 加锁以安全访问调度域
+    rcu_read_lock();
 
-		/*
-		 * Usually only true for WF_EXEC and WF_FORK, as sched_domains
-		 * usually do not have SD_BALANCE_WAKE set. That means wakeup
-		 * will usually go to the fast path.
-		 */
-		if (tmp->flags & sd_flag)
-			sd = tmp;
-		else if (!want_affine)
-			break;
-	}
+    // 遍历当前 CPU 的所有调度域
+    for_each_domain(cpu, tmp) {
+        /*
+         * 关键步骤 2：唤醒亲和性检查
+         * 如果需要唤醒亲和性，且当前调度域支持 SD_WAKE_AFFINE，
+         * 并且 prev_cpu 在此调度域内，则优先选择与唤醒亲和性相关的 CPU
+         */
+        if (want_affine && (tmp->flags & SD_WAKE_AFFINE) &&
+            cpumask_test_cpu(prev_cpu, sched_domain_span(tmp))) {
+            if (cpu != prev_cpu)
+                new_cpu = wake_affine(tmp, p, cpu, prev_cpu, sync);  // 调用 wake_affine 选择 CPU
+            sd = NULL;  // 优先考虑唤醒亲和性，忽略负载均衡标志
+            break;      // 找到后退出循环
+        }
 
-	if (unlikely(sd)) {
-		/* Slow path */
-		new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag);
-	} else if (wake_flags & WF_TTWU) { /* XXX always ? */
-		/* Fast path */
-		new_cpu = select_idle_sibling(p, prev_cpu, new_cpu);
-	}
-	rcu_read_unlock();
+        /*
+         * 如果调度域的标志与 sd_flag 匹配，则记录当前调度域
+         * 通常仅对 WF_EXEC 和 WF_FORK 为真，因为调度域通常不设置 SD_BALANCE_WAKE
+         */
+        if (tmp->flags & sd_flag)
+            sd = tmp;
+        else if (!want_affine)
+            break;  // 如果不需要唤醒亲和性，且未匹配 sd_flag，则退出循环
+    }
 
-	return new_cpu;
+    // 关键步骤 3：负载均衡路径选择
+    // 根据 sd 是否为空选择慢速路径或快速路径
+    if (unlikely(sd)) {
+        /* 慢速路径：寻找最空闲的 CPU */
+        new_cpu = find_idlest_cpu(sd, p, cpu, prev_cpu, sd_flag);
+    } else if (wake_flags & WF_TTWU) { /* XXX always ? */
+        /* 快速路径：选择空闲的兄弟 CPU */
+        new_cpu = select_idle_sibling(p, prev_cpu, new_cpu);
+    }
+
+    rcu_read_unlock();  // 解锁
+
+    return new_cpu;  // 返回最终选择的 CPU
 }
 
 /*
@@ -7955,28 +7994,34 @@ static void set_skip_buddy(struct sched_entity *se)
 
 /*
  * Preempt the current task with a newly woken task if needed:
+ * 如果需要，用新唤醒的任务抢占当前任务。
  */
 static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
 {
 	struct task_struct *curr = rq->curr;
 	struct sched_entity *se = &curr->se, *pse = &p->se;
 	struct cfs_rq *cfs_rq = task_cfs_rq(curr);
+	/* 判断运行队列的任务数是否超过调度延迟阈值，用于后续决策 */
 	int scale = cfs_rq->nr_running >= sched_nr_latency;
+	/* 标记是否已设置next_buddy */
 	int next_buddy_marked = 0;
+	/* 声明变量用于后续判断调度实体的空闲状态 */
 	int cse_is_idle, pse_is_idle;
 
+	/*1. 如果当前任务和新唤醒任务是同一个（调度实体相同），无需抢占，直接返回 */
 	if (unlikely(se == pse))
 		return;
 
 	/*
-	 * This is possible from callers such as attach_tasks(), in which we
-	 * unconditionally check_preempt_curr() after an enqueue (which may have
-	 * lead to a throttle).  This both saves work and prevents false
-	 * next-buddy nomination below.
-	 */
+     * 检查新任务是否在节流层级中（例如由attach_tasks()调用后触发），
+     * 如果是，则无需抢占，避免不必要的检查和错误的next-buddy提名。
+     */
 	if (unlikely(throttled_hierarchy(cfs_rq_of(pse))))
 		return;
-
+	/*
+     * 如果启用了NEXT_BUDDY特性、运行队列繁忙且不是fork唤醒，
+     * 将新任务设置为next_buddy，提示调度器下次优先考虑它。
+     */
 	if (sched_feat(NEXT_BUDDY) && scale && !(wake_flags & WF_FORK)) {
 		set_next_buddy(pse);
 		next_buddy_marked = 1;
@@ -7992,42 +8037,56 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	 * prevents us from potentially nominating it as a false LAST_BUDDY
 	 * below.
 	 */
+	/*
+     *2. 如果当前任务已设置TIF_NEED_RESCHED标志（表示需要重新调度），
+     *   直接返回，避免重复设置抢占标志。同时处理当前任务在节流组的边缘情况。
+     */
 	if (test_tsk_need_resched(curr))
 		return;
 
-	/* Idle tasks are by definition preempted by non-idle tasks. */
+	/*
+     *3. 如果当前任务是空闲任务（SCHED_IDLE策略），而新任务不是空闲任务，
+     *   则立即触发抢占，因为空闲任务优先级最低。
+     */
 	if (unlikely(task_has_idle_policy(curr)) &&
 	    likely(!task_has_idle_policy(p)))
 		goto preempt;
 
 	/*
-	 * Batch and idle tasks do not preempt non-idle tasks (their preemption
-	 * is driven by the tick):
-	 */
+     *4. 批处理任务（SCHED_BATCH）和空闲任务不会抢占非空闲任务，它们的抢占由时钟tick驱动。
+     *   如果未启用WAKEUP_PREEMPTION特性，也不进行唤醒抢占。
+     */
 	if (unlikely(p->policy != SCHED_NORMAL) || !sched_feat(WAKEUP_PREEMPTION))
 		return;
 
+	/* 调整调度实体，使其在同一调度层级上可比较（任务 vs. 任务组） */
 	find_matching_se(&se, &pse);
 	WARN_ON_ONCE(!pse);
 
+	/* 获取当前任务和新任务调度实体的空闲状态 */
 	cse_is_idle = se_is_idle(se);
 	pse_is_idle = se_is_idle(pse);
 
 	/*
-	 * Preempt an idle group in favor of a non-idle group (and don't preempt
-	 * in the inverse case).
-	 */
+     *5. 如果当前调度实体是空闲的，而新任务不是，则触发抢占。
+     *   如果两者空闲状态不同且不满足上述条件，则返回。
+     */
 	if (cse_is_idle && !pse_is_idle)
 		goto preempt;
 	if (cse_is_idle != pse_is_idle)
 		return;
-
+	/*6. 更新当前任务的虚拟运行时间（vruntime），确保公平性 */
 	update_curr(cfs_rq_of(se));
+
+	/*
+     *7. 比较当前任务和新任务的vruntime，决定是否抢占。
+     *   如果wakeup_preempt_entity返回1，表示新任务优先级更高。
+     */
 	if (wakeup_preempt_entity(se, pse) == 1) {
 		/*
-		 * Bias pick_next to pick the sched entity that is
-		 * triggering this preemption.
-		 */
+         * 如果尚未设置next_buddy，将新任务设置为next_buddy，
+         * 提示调度器下次优先选择它。
+         */
 		if (!next_buddy_marked)
 			set_next_buddy(pse);
 		goto preempt;
@@ -8036,6 +8095,7 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	return;
 
 preempt:
+	/*8. 标记当前任务需要重新调度，触发抢占*/
 	resched_curr(rq);
 	/*
 	 * Only set the backward buddy when the current task is still
@@ -12273,22 +12333,24 @@ static void task_fork_fair(struct task_struct *p)
 }
 
 /*
- * Priority of the task has changed. Check to see if we preempt
- * the current task.
+ * 当任务的优先级发生变化时，检查是否需要抢占当前任务。
  */
-static void
-prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
+static void prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
 {
+	/*1. 如果任务不在运行队列中，则无需检查，直接返回*/
 	if (!task_on_rq_queued(p))
 		return;
 
+	/*2. 如果运行队列中只有一个任务，则没有其他任务可抢占，也无需重新调度*/
 	if (rq->cfs.nr_running == 1)
 		return;
 
-	/*
-	 * Reschedule if we are currently running on this runqueue and
-	 * our priority decreased, or if we are not currently running on
-	 * this runqueue and our priority is higher than the current's
+	/*3. 更改优先级，并判断是否需要抢占或重新调度；
+	 *   3.1 如果任务正在当前CPU上运行：
+	 *     - 当任务优先级下降（即p->prio值增大）时，当前任务需要重新调度，
+	 *       以便让其他优先级更高的任务获得CPU
+	 *   3.2 如果任务不在当前运行队列上运行：
+	 *     - 检查是否应当抢占当前运行的任务
 	 */
 	if (task_current(rq, p)) {
 		if (p->prio > oldprio)
