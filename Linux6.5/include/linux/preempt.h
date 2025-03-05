@@ -198,16 +198,19 @@ extern void preempt_count_sub(int val);
 #define preempt_count_dec() preempt_count_sub(1)
 
 #ifdef CONFIG_PREEMPT_COUNT
-
+/*禁用抢占*/
 #define preempt_disable() \
 do { \
+	/*preempt_count +1*/
 	preempt_count_inc(); \
 	barrier(); \
 } while (0)
 
+/*开启抢占 */
 #define sched_preempt_enable_no_resched() \
 do { \
 	barrier(); \
+	/*preempt_count - 1*/
 	preempt_count_dec(); \
 } while (0)
 
@@ -217,7 +220,6 @@ do { \
 
 #ifdef CONFIG_PREEMPTION
 /*检查是否需要抢占，需要的话，通过__preempt_schedule()执行抢占操作
- 
  */
 #define preempt_enable() \
 do { \
@@ -238,7 +240,7 @@ do { \
 	if (unlikely(__preempt_count_dec_and_test())) \
 		__preempt_schedule_notrace(); \
 } while (0)
-
+/*是否需要抢占*/
 #define preempt_check_resched() \
 do { \
 	if (should_resched(0)) \

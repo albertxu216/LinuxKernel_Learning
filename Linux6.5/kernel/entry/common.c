@@ -154,7 +154,7 @@ static unsigned long exit_to_user_mode_loop(struct pt_regs *regs,
 	while (ti_work & EXIT_TO_USER_MODE_WORK) {
 
 		local_irq_enable_exit_to_user(ti_work);
-
+		/*如果标记了需要抢占，则重新调度*/
 		if (ti_work & _TIF_NEED_RESCHED)
 			schedule();
 
@@ -200,6 +200,7 @@ static void exit_to_user_mode_prepare(struct pt_regs *regs)
 	tick_nohz_user_enter_prepare();
 
 	ti_work = read_thread_flags();
+	/*返回用户空间前，检查thread_flags*/
 	if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
 		ti_work = exit_to_user_mode_loop(regs, ti_work);
 
@@ -278,7 +279,7 @@ static void syscall_exit_to_user_mode_prepare(struct pt_regs *regs)
 	if (unlikely(work & SYSCALL_WORK_EXIT))
 		syscall_exit_work(regs, work);
 }
-
+/*系统调用返回用户空间*/
 static __always_inline void __syscall_exit_to_user_mode_work(struct pt_regs *regs)
 {
 	syscall_exit_to_user_mode_prepare(regs);
@@ -290,10 +291,11 @@ void syscall_exit_to_user_mode_work(struct pt_regs *regs)
 {
 	__syscall_exit_to_user_mode_work(regs);
 }
-
+/*系统调用返回用户空间*/
 __visible noinstr void syscall_exit_to_user_mode(struct pt_regs *regs)
 {
 	instrumentation_begin();
+	/*返回用户空间*/
 	__syscall_exit_to_user_mode_work(regs);
 	instrumentation_end();
 	__exit_to_user_mode();
@@ -304,9 +306,11 @@ noinstr void irqentry_enter_from_user_mode(struct pt_regs *regs)
 	__enter_from_user_mode(regs);
 }
 
+/*中断返回用户空间*/
 noinstr void irqentry_exit_to_user_mode(struct pt_regs *regs)
 {
 	instrumentation_begin();
+	/*返回用户空间*/
 	exit_to_user_mode_prepare(regs);
 	instrumentation_end();
 	__exit_to_user_mode();
@@ -378,15 +382,18 @@ noinstr irqentry_state_t irqentry_enter(struct pt_regs *regs)
 
 	return ret;
 }
-
+/*中断返回内核空间时*/
 void raw_irqentry_exit_cond_resched(void)
 {
+	/*内核是否允许抢占*/
 	if (!preempt_count()) {
 		/* Sanity check RCU and thread stack */
 		rcu_irq_exit_check_preempt();
 		if (IS_ENABLED(CONFIG_DEBUG_ENTRY))
 			WARN_ON_ONCE(!on_thread_stack());
+		/*是否需要抢占*/
 		if (need_resched())
+			/*内核抢占*/
 			preempt_schedule_irq();
 	}
 }
@@ -403,13 +410,14 @@ void dynamic_irqentry_exit_cond_resched(void)
 }
 #endif
 #endif
-
+/*恢复中断前保存的状态，并退出中断处理*/
 noinstr void irqentry_exit(struct pt_regs *regs, irqentry_state_t state)
 {
 	lockdep_assert_irqs_disabled();
 
 	/* Check whether this returns to user mode */
 	if (user_mode(regs)) {
+		/*中断返回用户空间*/
 		irqentry_exit_to_user_mode(regs);
 	} else if (!regs_irqs_disabled(regs)) {
 		/*
@@ -430,6 +438,7 @@ noinstr void irqentry_exit(struct pt_regs *regs, irqentry_state_t state)
 
 		instrumentation_begin();
 		if (IS_ENABLED(CONFIG_PREEMPTION))
+			/*返回内核空间时*/
 			irqentry_exit_cond_resched();
 
 		/* Covers both tracing and lockdep */

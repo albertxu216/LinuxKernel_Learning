@@ -2125,7 +2125,7 @@ static __always_inline int _cond_resched(void)
 }
 
 #else /* !CONFIG_PREEMPTION */
-
+/*增加抢占调度的检测点，提高系统的响应性*/
 static inline int _cond_resched(void)
 {
 	klp_sched_try_switch();
@@ -2143,7 +2143,7 @@ static inline int _cond_resched(void)
 }
 
 #endif /* !CONFIG_PREEMPTION || CONFIG_PREEMPT_DYNAMIC */
-
+/*增加抢占调度的检测点，提高系统的响应性*/
 #define cond_resched() ({			\
 	__might_resched(__FILE__, __LINE__, 0);	\
 	_cond_resched();			\

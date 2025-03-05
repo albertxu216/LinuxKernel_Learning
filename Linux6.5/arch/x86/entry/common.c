@@ -69,10 +69,11 @@ static __always_inline bool do_syscall_x32(struct pt_regs *regs, int nr)
 	}
 	return false;
 }
-
+/*系统调用*/
 __visible noinstr void do_syscall_64(struct pt_regs *regs, int nr)
 {
 	add_random_kstack_offset();
+	/*从用户空间陷入内核*/
 	nr = syscall_enter_from_user_mode(regs, nr);
 
 	instrumentation_begin();
@@ -83,6 +84,7 @@ __visible noinstr void do_syscall_64(struct pt_regs *regs, int nr)
 	}
 
 	instrumentation_end();
+	/*返回用户空间*/
 	syscall_exit_to_user_mode(regs);
 }
 #endif

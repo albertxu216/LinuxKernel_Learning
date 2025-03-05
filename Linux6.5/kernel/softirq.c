@@ -199,7 +199,7 @@ static void __local_bh_enable(unsigned int cnt, bool unlock)
 		local_unlock(&softirq_ctrl.lock);
 	}
 }
-
+/*重启软中断*/
 void __local_bh_enable_ip(unsigned long ip, unsigned int cnt)
 {
 	bool preempt_on = preemptible();
@@ -380,7 +380,7 @@ void __local_bh_enable_ip(unsigned long ip, unsigned int cnt)
 		 */
 		do_softirq();
 	}
-
+	/*对preempt_count标志位进行 -- 操作*/
 	preempt_count_dec();
 #ifdef CONFIG_TRACE_IRQFLAGS
 	local_irq_enable();

@@ -177,33 +177,51 @@ __visible noinstr void func(struct pt_regs *regs, unsigned long error_code)
 	DECLARE_IDTENTRY_ERRORCODE(vector, func)
 
 /**
- * DEFINE_IDTENTRY_IRQ - Emit code for device interrupt IDT entry points
- * @func:	Function name of the entry point
+ * DEFINE_IDTENTRY_IRQ - 为设备中断的 IDT 入口点生成相应代码
+ * @func:	入口函数的名称
  *
- * The vector number is pushed by the low level entry stub and handed
- * to the function as error_code argument which needs to be truncated
- * to an u8 because the push is sign extending.
+ * 说明：
+ * 1. 在低级中断入口处，向堆栈中压入中断向量号，并作为 error_code 参数传递给该函数。
+ *    由于 error_code 的压栈过程涉及符号扩展，因此需要将其截断为 8 位 (u8) 后再转换为 u32。
  *
- * irq_enter/exit_rcu() are invoked before the function body and the
- * KVM L1D flush request is set. Stack switching to the interrupt stack
- * has to be done in the function body if necessary.
+ * 2. 在进入函数体前，会调用 irqentry_enter() 来进行中断入口相关状态的保存，
+ *    同时调用 irqentry_exit() 来在退出时恢复状态。此外，还会调用 kvm_set_cpu_l1tf_flush_l1d()
+ *    来设置 KVM L1D flush 请求。
+ *
+ * 3. 如果有必要，中断处理过程中会进行栈切换，切换到专用的中断栈，这一过程由 run_irq_on_irqstack_cond()
+ *    根据条件来执行。
+ *
+ * 4. 该宏定义了两个函数：
+ *    - 一个是公开的入口函数 func()，它包装了中断入口的通用操作（如状态保存、仪表化、KVM flush 等）。
+ *    - 另一个是实际的中断处理函数 __func()，由 func() 调用，该函数应包含具体的中断处理逻辑，
+ *      并且被标记为 noinline，以防止内联优化。
  */
 #define DEFINE_IDTENTRY_IRQ(func)					\
+/* 声明实际中断处理函数 __func，后续由开发者提供具体实现 */	\
 static void __##func(struct pt_regs *regs, u32 vector);			\
 									\
+/* 定义中断入口函数 func，公开可见且不进行额外指令插装 */		\
 __visible noinstr void func(struct pt_regs *regs,			\
 			    unsigned long error_code)			\
 {									\
+	/* 进入中断处理，保存中断状态 */				\
 	irqentry_state_t state = irqentry_enter(regs);			\
+	/* 从 error_code 中截取低 8 位获得中断向量号，并转换为 u32 类型 */	\
 	u32 vector = (u32)(u8)error_code;				\
 									\
+	/* 开始仪表化，用于性能监控等目的 */				\
 	instrumentation_begin();					\
+	/* 设置 KVM L1D flush 请求，确保 CPU 缓存一致性 */		\
 	kvm_set_cpu_l1tf_flush_l1d();					\
+	/* 根据条件判断是否需要切换到专用中断栈，并调用实际中断处理函数 __func */	\
 	run_irq_on_irqstack_cond(__##func, regs, vector);		\
+	/* 结束仪表化 */						\
 	instrumentation_end();						\
+	/* 恢复中断前保存的状态，并退出中断处理 */			\
 	irqentry_exit(regs, state);					\
 }									\
 									\
+/* 定义实际的中断处理函数 __func，标记为 noinline 防止内联优化 */	\
 static noinline void __##func(struct pt_regs *regs, u32 vector)
 
 /**

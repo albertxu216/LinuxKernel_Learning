@@ -6922,34 +6922,43 @@ void __sched notrace schedule_rtlock(void)
 NOKPROBE_SYMBOL(schedule_rtlock);
 #endif
 
+/*
+ * preempt_schedule_common - 内核抢占调度的通用入口
+ *
+ * 该函数在抢占调度过程中被调用，用于处理抢占的调度循环。
+ * 它通过循环调用 __schedule(SM_PREEMPT) 来执行调度，直到系统不再需要抢占（need_resched() 为 false）。
+ *
+ * 需要注意的是：为了防止函数追踪器（function tracer）在追踪 preempt_count_sub() 时，
+ * 调用 preempt_enable_notrace() 进而再次调用本函数，导致无限递归，
+ * 这里将 preempt_disable() 分解为两次调用：一部分用于禁用抢占（不受追踪影响），
+ * 另一部分用于记录抢占延迟（允许被追踪）。
+ */
 static void __sched notrace preempt_schedule_common(void)
 {
 	do {
 		/*
-		 * Because the function tracer can trace preempt_count_sub()
-		 * and it also uses preempt_enable/disable_notrace(), if
-		 * NEED_RESCHED is set, the preempt_enable_notrace() called
-		 * by the function tracer will call this function again and
-		 * cause infinite recursion.
+		 * 由于函数追踪器可能会追踪 preempt_count_sub()，
+		 * 且它内部调用 preempt_enable_notrace()/preempt_disable_notrace()，
+		 * 如果 NEED_RESCHED 标志被设置，则追踪器调用的 preempt_enable_notrace()
+		 * 可能再次调用本函数，造成无限递归。
 		 *
-		 * Preemption must be disabled here before the function
-		 * tracer can trace. Break up preempt_disable() into two
-		 * calls. One to disable preemption without fear of being
-		 * traced. The other to still record the preemption latency,
-		 * which can also be traced by the function tracer.
+		 * 因此，在函数追踪器开始追踪之前，需要先禁用抢占。
+		 * 将 preempt_disable() 分成两步：
+		 * 1. 使用 preempt_disable_notrace() 禁用抢占，避免被追踪。
+		 * 2. 使用 preempt_latency_start() 记录抢占延迟，这部分仍允许被追踪。
 		 */
-		preempt_disable_notrace();
-		preempt_latency_start(1);
-		__schedule(SM_PREEMPT);
-		preempt_latency_stop(1);
-		preempt_enable_no_resched_notrace();
+		preempt_disable_notrace();    /* 禁用抢占，避免追踪器干扰 */
+		preempt_latency_start(1);       /* 开始记录抢占延迟 */
+		__schedule(SM_PREEMPT);         /* 执行抢占调度 */
+		preempt_latency_stop(1);        /* 停止记录抢占延迟 */
+		preempt_enable_no_resched_notrace();  /* 重新允许抢占，但不触发重新调度 */
 
 		/*
-		 * Check again in case we missed a preemption opportunity
-		 * between schedule and now.
+		 * 再次检查是否需要调度，以防在 __schedule() 调用后又产生了新的抢占请求。
 		 */
 	} while (need_resched());
 }
+
 
 #ifdef CONFIG_PREEMPTION
 /*
@@ -6964,6 +6973,7 @@ asmlinkage __visible void __sched notrace preempt_schedule(void)
 	 */
 	if (likely(!preemptible()))
 		return;
+	/*抢占调度时会触发调度执行*/
 	preempt_schedule_common();
 }
 NOKPROBE_SYMBOL(preempt_schedule);
@@ -7066,31 +7076,47 @@ EXPORT_SYMBOL(dynamic_preempt_schedule_notrace);
 #endif /* CONFIG_PREEMPTION */
 
 /*
- * This is the entry point to schedule() from kernel preemption
- * off of irq context.
- * Note, that this is called and return with irqs disabled. This will
- * protect us against recursive calling from irq.
+ * 这是从内核抢占（preemption）上下文下，
+ * 从 IRQ（中断）上下文调用 schedule() 的入口函数。
+ *
+ * 注意：该函数调用和返回时都保持中断关闭状态，
+ * 这样可以防止在中断上下文中递归调用调度函数。
  */
 asmlinkage __visible void __sched preempt_schedule_irq(void)
 {
+	/* 保存当前异常（中断）状态 */
 	enum ctx_state prev_state;
 
-	/* Catch callers which need to be fixed */
+	/* 
+	 * 检查调用者是否满足要求：
+	 *  - preempt_count() 应为 0，表示当前没有嵌套的抢占；
+	 *  - 中断必须处于关闭状态，否则可能会在中断上下文中递归调用调度函数。
+	 * 如果条件不满足，则触发 BUG，提示调用者需要修正。
+	 */
 	BUG_ON(preempt_count() || !irqs_disabled());
 
+	/* 进入异常处理上下文，保存之前的上下文状态 */
 	prev_state = exception_enter();
 
+	/*
+	 * 循环执行调度操作，直到不再需要调度（need_resched() 返回 false）。
+	 */
 	do {
+		/* 禁用抢占，防止在调度过程中再次抢占 */
 		preempt_disable();
+		/* 临时开启本地中断，以便在 __schedule() 执行期间响应中断 */
 		local_irq_enable();
+		/* 调用真正的调度函数，参数 SM_PREEMPT 指示这是一次抢占调度 */
 		__schedule(SM_PREEMPT);
+		/* 调度完成后，重新关闭本地中断 */
 		local_irq_disable();
+		/* 重新允许抢占，但不触发重新调度 */
 		sched_preempt_enable_no_resched();
-	} while (need_resched());
+	} while (need_resched());  /* 如果仍有调度请求，则继续循环 */
 
+	/* 退出异常处理上下文，恢复之前的上下文状态 */
 	exception_exit(prev_state);
 }
-
 int default_wake_function(wait_queue_entry_t *curr, unsigned mode, int wake_flags,
 			  void *key)
 {
@@ -8665,26 +8691,35 @@ SYSCALL_DEFINE0(sched_yield)
 #if !defined(CONFIG_PREEMPTION) || defined(CONFIG_PREEMPT_DYNAMIC)
 int __sched __cond_resched(void)
 {
+	/*1. 检查是否需要重新调度：
+	 *   should_resched(0) 会判断当前是否存在需要调度的条件。
+	 *   如果返回 true，则调用 preempt_schedule_common() 执行抢占调度，
+	 *   并返回 1 表示调度发生了。
+	 */
 	if (should_resched(0)) {
 		preempt_schedule_common();
 		return 1;
 	}
+
 	/*
-	 * In preemptible kernels, ->rcu_read_lock_nesting tells the tick
-	 * whether the current CPU is in an RCU read-side critical section,
-	 * so the tick can report quiescent states even for CPUs looping
-	 * in kernel context.  In contrast, in non-preemptible kernels,
-	 * RCU readers leave no in-memory hints, which means that CPU-bound
-	 * processes executing in kernel context might never report an
-	 * RCU quiescent state.  Therefore, the following code causes
-	 * cond_resched() to report a quiescent state, but only when RCU
-	 * is in urgent need of one.
+	 * 在抢占式内核中，->rcu_read_lock_nesting 提供了当前 CPU 是否处于 RCU
+	 * 读临界区的内存提示，这样即使 CPU 在内核上下文中循环，也能由 tick 汇报平静状态（quiescent state）。
+	 *
+	 * 而在非抢占式内核中，RCU 读者不会留下内存提示，
+	 * 这可能导致一直在内核态运行的 CPU 绑定进程无法报告 RCU 平静状态，
+	 * 从而延迟 RCU 的更新。
+	 *
+	 * 因此，在 CONFIG_PREEMPT_RCU 未定义的情况下，调用 rcu_all_qs()，
+	 * 主动报告一个 RCU 平静状态，以满足 RCU 对平静状态的紧急需求。
 	 */
 #ifndef CONFIG_PREEMPT_RCU
 	rcu_all_qs();
 #endif
+
+	/* 如果不需要重新调度，则返回 0 */
 	return 0;
 }
+
 EXPORT_SYMBOL(__cond_resched);
 #endif
 
