@@ -5367,54 +5367,69 @@ asmlinkage __visible void schedule_tail(struct task_struct *prev)
 }
 
 /*
- * context_switch - switch to the new MM and the new thread's register state.
+ * context_switch - 切换到新任务的内存管理（MM）以及新线程的寄存器状态。
+ *
+ * 该函数主要完成以下工作：
+ * 1. 做好上下文切换前的准备工作
+ * 2. 根据目标任务是否为内核线程（无 mm）或用户线程（有 mm），进行不同的内存管理切换操作
+ * 3. 更新内存管理相关的屏障和标识，保证切换后的内存一致性
+ * 4. 最后调用 switch_to() 切换寄存器状态和栈，并完成任务切换后收尾工作
  */
 static __always_inline struct rq *
 context_switch(struct rq *rq, struct task_struct *prev,
 	       struct task_struct *next, struct rq_flags *rf)
 {
+    /* 1. 上下文切换前的准备工作：
+     *    函数 prepare_task_switch() 用于保存当前任务状态、更新调度器相关数据等，
+     *    为后续的上下文切换做好必要准备。
+     */
 	prepare_task_switch(rq, prev, next);
 
-	/*
-	 * For paravirt, this is coupled with an exit in switch_to to
-	 * combine the page table reload and the switch backend into
-	 * one hypercall.
-	 */
+    /*
+     * 对于 paravirtualization（半虚拟化）的场景，arch_start_context_switch()
+     * 与 switch_to() 中的退出流程配合，能够将页表重新加载与后端切换合并到一个超调用中，
+     * 提高切换效率。
+     */
 	arch_start_context_switch(prev);
 
-	/*
-	 * kernel -> kernel   lazy + transfer active
-	 *   user -> kernel   lazy + mmgrab_lazy_tlb() active
-	 *
-	 * kernel ->   user   switch + mmdrop_lazy_tlb() active
-	 *   user ->   user   switch
-	 *
-	 * switch_mm_cid() needs to be updated if the barriers provided
-	 * by context_switch() are modified.
+    /*
+     * 接下来的代码根据目标任务 next 是否为内核线程（无 mm）来分支处理：
+     *
+     * kernel -> kernel（内核线程之间）：采用懒惰方式传递 active_mm；
+     * user -> kernel（用户线程切换到内核线程）：需要调用 mmgrab_lazy_tlb() 保持 TLB 的一致性；
+     * kernel -> user（内核线程切换到用户线程）：调用 switch_mm_irqs_off() 进行切换，同时
+     * 触发 mmdrop_lazy_tlb() 以释放无用页表；
+     * user -> user（用户线程之间）：直接切换。
+     */
+	/*2. 判断是否是内核线程
+	 *2.1内核线程: 使用prev 进程的活跃内存描述,并进入懒惰 TLB 模式
+	 *             懒惰TLB的意思是,让内核线程在不立即刷新 TLB 的情况下，
+	 *             能够正确使用前一个任务的内存映射。
+	 *             这种方式能够避免每次切换时都进行昂贵的 TLB 刷新操作。
+	 *2.2 用户线程:	首先通过 membarrier_switch_mm() 进行内存屏障切换，
 	 */
-	if (!next->mm) {                                // to kernel
+	if (!next->mm) {     
+		/*2.1.1 内核线程：进入懒惰 TLB 模式，利用当前任务（prev）的 active_mm*/                           // to kernel
 		enter_lazy_tlb(prev->active_mm, next);
-
+		/*2.1.2 如果下一个要执行的是内核线程,需要借用 prev 进程的活跃内存描述符 active_mm*/
 		next->active_mm = prev->active_mm;
-		if (prev->mm)                           // from user
-			mmgrab_lazy_tlb(prev->active_mm);
-		else
-			prev->active_mm = NULL;
-	} else {                                        // to user
-		membarrier_switch_mm(rq, prev->active_mm, next->mm);
-		/*
-		 * sys_membarrier() requires an smp_mb() between setting
-		 * rq->curr / membarrier_switch_mm() and returning to userspace.
-		 *
-		 * The below provides this either through switch_mm(), or in
-		 * case 'prev->active_mm == next->mm' through
-		 * finish_task_switch()'s mmdrop().
+		/*2.1.3 对于用户线程切换到内核线程的情况,
+		 *      调用 mmgrab_lazy_tlb() 增加 active_mm 的引用计数*/
+        if (prev->mm)   
+            mmgrab_lazy_tlb(prev->active_mm);
+        else     
+		/*2.1.4 对于内核线程切换到内核线程的情况，清空其 active_mm */
+            prev->active_mm = NULL;
+    } else { 
+        /*2.2 用户线程切换：
+		 *    首先通过 membarrier_switch_mm() 进行内存屏障切换，
+		 *    再调用 switch_mm_irqs_off() 进行进程地址空间的实际切换。
 		 */
+		membarrier_switch_mm(rq, prev->active_mm, next->mm);
 		switch_mm_irqs_off(prev->active_mm, next->mm, next);
 		lru_gen_use_mm(next->mm);
-
-		if (!prev->mm) {                        // from kernel
-			/* will mmdrop_lazy_tlb() in finish_task_switch(). */
+		if (!prev->mm) {  /* 如果 prev 为内核线程（即从内核切换到用户线程），
+							 则保存 prev 的 active_mm 到 rq->prev_mm，并清空 prev->active_mm */
 			rq->prev_mm = prev->active_mm;
 			prev->active_mm = NULL;
 		}
@@ -5428,9 +5443,16 @@ context_switch(struct rq *rq, struct task_struct *prev,
 	prepare_lock_switch(rq, next, rf);
 
 	/* Here we just switch the register state and the stack. */
+	/*3. 新旧进程的切换点,所有进程在调度时的切换都在switch_to函数
+	 *   切换到 next 进程的内核态栈 和 硬件上下文
+	 */
 	switch_to(prev, next, prev);
 	barrier();
 
+	/*4. 此处由next进程来执行finish_task_switch函数;
+	 *   会递减mm_count,
+	 *   将prev进程的on_cpu置为0,即prev进程完全下cpu,退出执行状态;
+	*/
 	return finish_task_switch(prev);
 }
 
@@ -6605,43 +6627,31 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 #endif
 
 /*
- * __schedule() is the main scheduler function.
+ * __schedule() 是内核中主要的调度函数。
  *
- * The main means of driving the scheduler and thus entering this function are:
+ * 调用该函数的主要方式有：
  *
- *   1. Explicit blocking: mutex, semaphore, waitqueue, etc.
+ *   1. 显式阻塞：例如，通过互斥锁、信号量、等待队列等机制将任务置于阻塞状态。
  *
- *   2. TIF_NEED_RESCHED flag is checked on interrupt and userspace return
- *      paths. For example, see arch/x86/entry_64.S.
+ *   2. 在中断和用户态返回路径中检查 TIF_NEED_RESCHED 标志：
+ *      例如，在 arch/x86/entry_64.S 中可见。当任务被预占时，
+ *      定时器中断处理程序 scheduler_tick() 会设置该标志，促使尽快调用调度函数。
  *
- *      To drive preemption between tasks, the scheduler sets the flag in timer
- *      interrupt handler scheduler_tick().
+ *   3. 唤醒操作不会直接调用 schedule()，仅仅是将任务添加到就绪队列中。
+ *      如果新加入的任务比当前任务具有更高的优先级，
+ *      则在合适的时机（如下列情况）设置 TIF_NEED_RESCHED，从而触发 schedule()：
  *
- *   3. Wakeups don't really cause entry into schedule(). They add a
- *      task to the run-queue and that's it.
+ *       - 对于支持内核抢占（CONFIG_PREEMPTION=y）的情况：
+ *         - 在系统调用或异常上下文中，下一个外层的 preempt_enable() 调用时（可能正好是 wake_up() 的 spin_unlock() 后）。
+ *         - 在中断上下文中，返回中断处理后进入可抢占上下文时。
  *
- *      Now, if the new task added to the run-queue preempts the current
- *      task, then the wakeup sets TIF_NEED_RESCHED and schedule() gets
- *      called on the nearest possible occasion:
+ *       - 对于不支持内核抢占（CONFIG_PREEMPTION 未设置）的情况，则在以下情况触发：
+ *          - cond_resched() 调用
+ *          - 显式调用 schedule()
+ *          - 从系统调用或异常返回到用户态
+ *          - 从中断处理返回到用户态
  *
- *       - If the kernel is preemptible (CONFIG_PREEMPTION=y):
- *
- *         - in syscall or exception context, at the next outmost
- *           preempt_enable(). (this might be as soon as the wake_up()'s
- *           spin_unlock()!)
- *
- *         - in IRQ context, return from interrupt-handler to
- *           preemptible context
- *
- *       - If the kernel is not preemptible (CONFIG_PREEMPTION is not set)
- *         then at the next:
- *
- *          - cond_resched() call
- *          - explicit schedule() call
- *          - return from syscall or exception to user-space
- *          - return from interrupt-handler to user-space
- *
- * WARNING: must be called with preemption disabled!
+ * 警告：调用 __schedule() 时必须保证抢占被禁用！
  */
 static void __sched notrace __schedule(unsigned int sched_mode)
 {
@@ -6657,42 +6667,45 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 	prev = rq->curr;
 
 	schedule_debug(prev, !!sched_mode);
-
+	/*如果启用了高精度计时（HRTICK 或 HRTICK_DL），则清除相关计时器状态*/
 	if (sched_feat(HRTICK) || sched_feat(HRTICK_DL))
 		hrtick_clear(rq);
 
+	/*1. 关闭本地中断，防止调度过程中被打断*/
 	local_irq_disable();
-	rcu_note_context_switch(!!sched_mode);
+	rcu_note_context_switch(!!sched_mode);//通知 RCU（Read-Copy Update）发生上下文切换，便于 RCU 正确同步
 
-	/*
-	 * Make sure that signal_pending_state()->signal_pending() below
-	 * can't be reordered with __set_current_state(TASK_INTERRUPTIBLE)
-	 * done by the caller to avoid the race with signal_wake_up():
-	 *
-	 * __set_current_state(@state)		signal_wake_up()
-	 * schedule()				  set_tsk_thread_flag(p, TIF_SIGPENDING)
-	 *					  wake_up_state(p, state)
-	 *   LOCK rq->lock			    LOCK p->pi_state
-	 *   smp_mb__after_spinlock()		    smp_mb__after_spinlock()
-	 *     if (signal_pending_state())	    if (p->state & @state)
-	 *
-	 * Also, the membarrier system call requires a full memory barrier
-	 * after coming from user-space, before storing to rq->curr.
-	 */
+    /*
+     * 以下代码确保 signal_pending_state() 调用与
+     * 调用者之前对 __set_current_state(TASK_INTERRUPTIBLE) 的操作不会被重排，
+     * 从而避免与 signal_wake_up() 之间出现竞态条件：
+     *
+     *    __set_current_state(@state)            signal_wake_up()
+     *    schedule()                          set_tsk_thread_flag(p, TIF_SIGPENDING)
+     *                                             wake_up_state(p, state)
+     *         LOCK rq->lock                      LOCK p->pi_state
+     *         smp_mb__after_spinlock()              smp_mb__after_spinlock()
+     *           if (signal_pending_state())          if (p->state & @state)
+     *
+     * 此外，membarrier 系统调用要求在从用户态返回前，
+     * 在将 rq->curr 更新为新任务之前必须执行一个完整的内存屏障。
+     */
 	rq_lock(rq, &rf);
 	smp_mb__after_spinlock();
 
 	/* Promote REQ to ACT */
 	rq->clock_update_flags <<= 1;
 	update_rq_clock(rq);
-
+	/*默认情况下，使用非自愿上下文切换计数（nivcsw）*/
 	switch_count = &prev->nivcsw;
 
 	/*
 	 * We must load prev->state once (task_struct::state is volatile), such
 	 * that we form a control dependency vs deactivate_task() below.
 	 */
+	/*获取当前进程状态*/
 	prev_state = READ_ONCE(prev->__state);
+	/*2. */
 	if (!(sched_mode & SM_MASK_PREEMPT) && prev_state) {
 		if (signal_pending_state(prev_state, prev)) {
 			WRITE_ONCE(prev->__state, TASK_RUNNING);
@@ -6725,14 +6738,15 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		}
 		switch_count = &prev->nvcsw;
 	}
-
+	/*3. 从当前运行队列中选择下一个要执行的任务*/
 	next = pick_next_task(rq, prev, &rf);
+	/*4. 清除当前任务的抢占标志位*/
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
 #ifdef CONFIG_SCHED_DEBUG
 	rq->last_seen_need_resched_ns = 0;
 #endif
-
+	/*5. 上下文切换*/
 	if (likely(prev != next)) {
 		rq->nr_switches++;
 		/*
