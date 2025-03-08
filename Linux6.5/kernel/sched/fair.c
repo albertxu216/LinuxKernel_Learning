@@ -912,7 +912,7 @@ static void update_curr(struct cfs_rq *cfs_rq)
 
 	if (unlikely(!curr))
 		return;
-	/*1.计算当前进程运行了多少时间*/
+	/*1.计算 当前就绪队列上 运行的进程 运行了多少时间*/
 	delta_exec = now - curr->exec_start;//自上次调度以来的时间
 	if (unlikely((s64)delta_exec <= 0))
 		return;
@@ -5043,15 +5043,17 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 	s64 delta;
 
 	/*
-	 *1.当前进程实际运行的时间比预期时间长(调度周期算出预期的运行时间长)
+	 *1.  当前调度实体 实际运行的时间比预期时间长(调度周期算出预期的运行时间长)
 	 *1.1 通过sched_slice计算当前任务理想时间片长度，赋值给ideal_runtime；
 	 *1.2 检查进程运行时间 是否超出 预期运行时间
+	 *    超出则重新调度
 	 */
-	ideal_runtime = min_t(u64, sched_slice(cfs_rq, curr), sysctl_sched_latency);
+	ideal_runtime = min_t(u64, sched_slice(cfs_rq, curr), sysctl_sched_latency);//理想运行时间
 	delta_exec = curr->sum_exec_runtime - curr->prev_sum_exec_runtime;//当前进程本次实际运行时间
-	if (delta_exec > ideal_runtime) {//实际运行时间超出预期，则重新调度resched_curr
+	if (delta_exec > ideal_runtime) {
+		/*实际运行时间超出预期，则重新调度resched_cur r*/
 		resched_curr(rq_of(cfs_rq));
-		/*
+		/* 
 		 * 清除调度器中的“亲密任务”（buddy）信息，
 		 * 避免当前任务因调度优先级偏好被再次选中。
 		 */
@@ -5242,9 +5244,12 @@ entity_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr, int queued)
 			hrtimer_active(&rq_of(cfs_rq)->hrtick_timer))
 		return;
 #endif
-	/*3.check_preempt_tick检查是否需要抢占当前任务*/
-	if (cfs_rq->nr_running > 1)//如果当前队列只有一个任务，则不执行，因为抢占逻辑不适用
-		check_preempt_tick(cfs_rq, curr);//比较当前任务的vruntime和其他任务的vruntime来判断要不要抢占
+	/*3.check_preempt_tick检查是否需要抢占当前任务
+	 *  如果当前队列只有一个任务，则不执行，因为只有一个任务，谁抢占呢？
+	 *  通过比较当前任务的vruntime和其他任务的vruntime来判断要不要抢占
+	 */
+	if (cfs_rq->nr_running > 1)
+		check_preempt_tick(cfs_rq, curr);
 }
 
 
@@ -12272,17 +12277,24 @@ static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
 	 */
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
-		/*1.3 更新调度实体的状态，检查是否需要调度*/
+		/*1.3 更新调度实体的状态，检查是否需要调度
+		 *    更新当前调度实体的时间信息
+		 *    检查是否需要抢占当前任务 
+		 */
 		entity_tick(cfs_rq, se, queued);
 	}
-	/*2.执行NUMA负载均衡，尝试将任务迁移到与其所需内存靠近的节点，通过调用task_tick_numa实现*/
+	/*2.执行NUMA负载均衡，尝试将任务迁移到与其所需内存靠近的节点，
+	 *  通过调用task_tick_numa实现
+	 */
 	if (static_branch_unlikely(&sched_numa_balancing))
 		/*触发时，执行NUMA负载均衡逻辑*/
 		task_tick_numa(rq, curr);
 
 	update_misfit_status(curr, rq);
 	update_overutilized_status(task_rq(curr));
-	/*3.执行核心调度相关操作逻辑*/
+	/*3.执行核心调度相关操作逻辑
+	 *  检查是否需要进行进程切换
+	 */
 	task_tick_core(rq, curr);
 }
 

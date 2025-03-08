@@ -5719,17 +5719,19 @@ void scheduler_tick(void)
 	u64 resched_latency;
 
 	if (housekeeping_cpu(cpu, HK_TYPE_TICK))
-		arch_scale_freq_tick();
+		arch_scale_freq_tick();// 如果是管理CPU，更新CPU频率缩放
 
-	sched_clock_tick();
+	sched_clock_tick();		// 更新调度时钟
 
+	/*1.更新运行队列的时钟及负载信息*/
 	rq_lock(rq, &rf);
-	/*1.更新运行队列的时钟计数*/
-	update_rq_clock(rq);
-	thermal_pressure = arch_scale_thermal_pressure(cpu_of(rq));
-	update_thermal_load_avg(rq_clock_thermal(rq), rq, thermal_pressure);
+	update_rq_clock(rq);///*1.更新运行队列的时钟计数*/
+	thermal_pressure = arch_scale_thermal_pressure(cpu_of(rq)); // 获取CPU热压力
+	update_thermal_load_avg(rq_clock_thermal(rq), rq, thermal_pressure);// 更新热负载平均值
+	
 	/*2.判断是否需要调度下一个任务
 	 *  不同调度类使用对应的task_tick函数实现
+	 *  用于检查当前进程是否已经运行足够长时间，是否需要被调度出去；
 	 */
 	curr->sched_class->task_tick(rq, curr, 0);
 	if (sched_feat(LATENCY_WARN))
@@ -5738,24 +5740,20 @@ void scheduler_tick(void)
 	calc_global_load_tick(rq);
 	sched_core_tick(rq);
 	task_tick_mm_cid(rq, curr);
-
-	rq_unlock(rq, &rf);
-
-	if (sched_feat(LATENCY_WARN) && resched_latency)
-		resched_latency_warn(cpu, resched_latency);
+esched_latency_warn(cpu, resched_latency);
 
 	perf_event_task_tick();
 
+	/*5. 工作队列线程，更新其状态*/
 	if (curr->flags & PF_WQ_WORKER)
 		wq_worker_tick(curr);
 
 #ifdef CONFIG_SMP
-	/*4.触发SMP负载均衡*/
+	/*6.触发SMP负载均衡*/
 	rq->idle_balance = idle_cpu(cpu);
 	trigger_load_balance(rq);//触发一个软中断,让ksoftirq线程处理真正地负载均衡过程
 #endif
 }
-
 #ifdef CONFIG_NO_HZ_FULL
 
 struct tick_work {
